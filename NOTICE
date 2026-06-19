@@ -1,0 +1,33 @@
+Aquarium
+Copyright (c) Inodra
+
+This product is licensed under the Apache License, Version 2.0 (the "License").
+You may obtain a copy of the License in the accompanying LICENSE file.
+
+================================================================================
+Third-party software and attribution
+================================================================================
+
+Aquarium is built on top of, and depends on, software from the Sui project by
+Mysten Labs, Inc. (https://github.com/MystenLabs/sui), which is licensed under
+the Apache License, Version 2.0.
+
+In particular, Aquarium links against the following Mysten Labs crates and does
+NOT vendor or copy their source:
+
+  - sui-data-store   (multi-tier object/transaction/epoch data store + GraphQL backend)
+  - sui-types        (core Sui object, transaction and effects types)
+  - sui-execution    (the Move VM / adapter execution engine)
+
+It also links transitively against further Mysten Labs and Move crates (for
+example move-core-types) pulled in by the crates above.
+
+The design of Aquarium's execution glue (the adapter that exposes a
+`sui_data_store::ObjectStore` to the Sui `Executor` via the runtime storage
+traits, and the way input objects are resolved before execution) is derived
+from, and follows the structure of, Mysten Labs' `sui-replay-2` crate
+(crates/sui-replay-2 in the Sui repository). Where Aquarium's source follows
+that structure closely, the relevant files carry an explicit attribution header.
+
+All Mysten Labs source remains the copyright of Mysten Labs, Inc. and is used
+under the terms of the Apache License, Version 2.0.
