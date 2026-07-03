@@ -136,9 +136,11 @@ impl Vm {
             &deny_set,
             &FundsWithdrawStatus::MaybeSufficient,
         );
+        // No accumulator (settlement) version: that gate only applies to
+        // mainnet committed execution, not a local fork.
         let execution_params = match early_error {
-            None => ExecutionOrEarlyError::Ok(()),
-            Some(error) => ExecutionOrEarlyError::Err(error),
+            None => ExecutionOrEarlyError::ok(None),
+            Some(errors) => ExecutionOrEarlyError::failed(errors, None),
         };
 
         let runtime_store = RuntimeStore::new(store, fork_checkpoint);

@@ -7,7 +7,7 @@ version = "0.0.1"
 edition = "2024"
 license = "Apache-2.0"
 description = "Fork Sui mainnet locally — a contained, observable slice of the chain for development."
-repository = "https://github.com/inodra/aquarium"
+repository = "https://github.com/inodrahq/aquarium"
 
 [[bin]]
 name = "aquarium"
@@ -20,14 +20,14 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 serde_json = "1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
-# --- Sui crates (reference: github.com/MystenLabs/sui @ mainnet-v1.72.5) ---
+# --- Sui crates (reference: github.com/MystenLabs/sui @ mainnet-v1.74.1) ---
 # We depend on these as published git crates so this project stays fully
 # standalone (it never links into a local Sui checkout). The execution engine
 # and data-store traits are Mysten's; see NOTICE for attribution.
-sui-data-store = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.72.5" }
-sui-types = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.72.5" }
+sui-data-store = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.74.1" }
+sui-types = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.74.1" }
 # Execution layer (heavy tree) — enabled once the read layer is validated.
-sui-execution = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.72.5", optional = true }
+sui-execution = { git = "https://github.com/MystenLabs/sui", tag = "mainnet-v1.74.1", optional = true }
 prometheus = { version = "0.14", optional = true }
 
 [features]
