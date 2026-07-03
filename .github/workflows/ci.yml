@@ -28,3 +28,34 @@ jobs:
         run: cargo clippy --all-targets --no-default-features -- -D warnings
       - name: Test
         run: cargo test --locked
+
+  # The repo pins the testnet channel (checked by `check` above). These legs
+  # re-pin to the other channels from channels.toml and test against them.
+  # devnet is a canary — cut from Mysten's tip, it breaks periodically and
+  # should inform, not block; mainnet must always pass.
+  channels:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { channel: mainnet, canary: false }
+          - { channel: devnet, canary: true }
+    name: channel-${{ matrix.channel }}
+    runs-on: ubuntu-22.04
+    continue-on-error: ${{ matrix.canary }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: channel-${{ matrix.channel }}
+      - name: Re-pin Sui crates to ${{ matrix.channel }}
+        run: |
+          set -euo pipefail
+          repo_tag=$(grep -om1 '[a-z]*net-v[0-9.]*' Cargo.toml)
+          channel_tag=$(grep '^${{ matrix.channel }} ' channels.toml | cut -d'"' -f2)
+          echo "re-pinning $repo_tag -> $channel_tag"
+          sed -i "s/${repo_tag}/${channel_tag}/g" Cargo.toml
+          cargo update sui-types sui-data-store sui-execution
+      - name: Test
+        run: cargo test

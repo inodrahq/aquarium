@@ -2,11 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Aquarium executes with the protocol versions compiled into the pinned Sui
-# crates; when mainnet's protocol version passes the pin's max, `demo`/execute
-# panics ("Please upgrade the binary"). This job runs daily, compares the
-# pinned `mainnet-v*` tag against MystenLabs' latest mainnet release, and — only
-# if a newer one exists — bumps Cargo.toml + Cargo.lock and opens a PR for
-# review. Nothing is opened when the pin is already current.
+# crates. This job runs daily and, per channel in channels.toml (mainnet,
+# testnet, devnet), compares the recorded tag against MystenLabs' latest
+# release for that channel. Only if a newer one exists does it bump
+# channels.toml (plus Cargo.toml/Cargo.lock for the default testnet channel)
+# and open a PR for review. No new release, no PR.
 #
 # Note: PRs created with the default GITHUB_TOKEN do not trigger the `ci`
 # workflow. Set a classic PAT (repo scope) as the BUMP_PAT secret to get CI on
@@ -25,31 +25,48 @@ permissions:
 
 jobs:
   bump:
+    strategy:
+      fail-fast: false
+      matrix:
+        channel: [mainnet, testnet, devnet]
+    name: ${{ matrix.channel }}
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
-      - name: Compare pinned Sui tag with latest mainnet release
+      - name: Compare channel pin with latest ${{ matrix.channel }} release
         id: version
         run: |
           set -euo pipefail
-          pinned=$(grep -om1 'mainnet-v[0-9.]*' Cargo.toml)
-          latest=$(git ls-remote --tags https://github.com/MystenLabs/sui 'mainnet-v1.*' \
+          pinned=$(grep '^${{ matrix.channel }} ' channels.toml | cut -d'"' -f2)
+          latest=$(git ls-remote --tags https://github.com/MystenLabs/sui '${{ matrix.channel }}-v1.*' \
             | awk -F/ '{print $3}' | grep -v '\^{}$' | sort -V | tail -1)
           echo "pinned=$pinned latest=$latest"
           {
             echo "pinned=$pinned"
             echo "latest=$latest"
-            if [ "$pinned" = "$latest" ]; then echo "bump=false"; else echo "bump=true"; fi
+            if [ "$pinned" = "$latest" ] || [ -z "$latest" ]; then
+              echo "bump=false"
+            else
+              echo "bump=true"
+            fi
           } >> "$GITHUB_OUTPUT"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Bump channels.toml
         if: steps.version.outputs.bump == 'true'
-      - uses: Swatinem/rust-cache@v2
-        if: steps.version.outputs.bump == 'true'
+        run: |
+          set -euo pipefail
+          sed -i 's/^${{ matrix.channel }} = ".*"/${{ matrix.channel }} = "${{ steps.version.outputs.latest }}"/' channels.toml
+          grep '^${{ matrix.channel }} ' channels.toml
 
+      # The repo's Cargo.toml pins the default (testnet) channel, so a testnet
+      # bump also updates the manifest and lockfile.
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.version.outputs.bump == 'true' && matrix.channel == 'testnet'
+      - uses: Swatinem/rust-cache@v2
+        if: steps.version.outputs.bump == 'true' && matrix.channel == 'testnet'
       - name: Bump Cargo.toml pins and Cargo.lock
-        if: steps.version.outputs.bump == 'true'
+        if: steps.version.outputs.bump == 'true' && matrix.channel == 'testnet'
         run: |
           set -euo pipefail
           sed -i "s/${{ steps.version.outputs.pinned }}/${{ steps.version.outputs.latest }}/g" Cargo.toml
@@ -61,20 +78,17 @@ jobs:
         with:
           token: ${{ secrets.BUMP_PAT || github.token }}
           branch: bump/sui-${{ steps.version.outputs.latest }}
-          title: "Bump Sui crates: ${{ steps.version.outputs.pinned }} → ${{ steps.version.outputs.latest }}"
+          title: "Bump Sui ${{ matrix.channel }} channel: ${{ steps.version.outputs.pinned }} → ${{ steps.version.outputs.latest }}"
           commit-message: |
-            deps: bump Sui crates to ${{ steps.version.outputs.latest }}
+            deps: bump Sui ${{ matrix.channel }} channel to ${{ steps.version.outputs.latest }}
 
-            Automated bump of the pinned MystenLabs Sui tag so the compiled-in
-            max protocol version keeps up with live mainnet.
+            Automated bump so the compiled-in protocol support keeps up with
+            Mysten's ${{ matrix.channel }} releases.
           body: |
-            Automated bump of the pinned Sui crates from `${{ steps.version.outputs.pinned }}` to `${{ steps.version.outputs.latest }}`.
-
-            If mainnet's protocol version has moved past the old pin's max supported
-            version, `aquarium demo` / `Fork::execute` panics until this merges.
+            Automated bump of the `${{ matrix.channel }}` channel from `${{ steps.version.outputs.pinned }}` to `${{ steps.version.outputs.latest }}`.
 
             Before merging:
-            - [ ] CI is green on both feature sets (upstream API breakage lands in `src/engine/vm.rs` first — see its history)
+            - [ ] CI is green — including the `channel-${{ matrix.channel }}` leg (upstream API breakage lands in `src/engine/vm.rs` first — see its history)
             - [ ] E2e smoke: `aquarium info`, `aquarium object --id 0x6`, `aquarium demo` against a live sender/coin
           reviewers: argos-inodra
           labels: dependencies

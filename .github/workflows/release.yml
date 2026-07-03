@@ -3,6 +3,9 @@
 #
 # Builds prebuilt `aquarium` binaries on each `v*` tag and attaches them (plus
 # per-asset SHA-256 checksums) to the GitHub Release that `install.sh` reads.
+# One binary per (channel × platform): the testnet and mainnet channels from
+# channels.toml are released; devnet is CI-only (install.sh builds it from
+# source).
 #
 # Native runners per architecture: the binary statically links the Sui Move VM,
 # which pulls native C deps, so we avoid cross-compilation entirely.
@@ -19,16 +22,18 @@ permissions:
 
 jobs:
   build:
-    name: ${{ matrix.os_label }}-${{ matrix.arch }}
+    name: ${{ matrix.channel }}-${{ matrix.os_label }}-${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
+        channel: [testnet, mainnet]
+        platform: [macos-arm64, macos-x86_64, linux-x86_64, linux-arm64]
         include:
-          - { runner: macos-14,      os_label: macOS,  arch: arm64,  target: aarch64-apple-darwin }
-          - { runner: macos-13,      os_label: macOS,  arch: x86_64, target: x86_64-apple-darwin }
-          - { runner: ubuntu-22.04,  os_label: Linux,  arch: x86_64, target: x86_64-unknown-linux-gnu }
-          - { runner: ubuntu-24.04-arm, os_label: Linux, arch: arm64, target: aarch64-unknown-linux-gnu }
+          - { platform: macos-arm64,  runner: macos-14,        os_label: macOS, arch: arm64,  target: aarch64-apple-darwin }
+          - { platform: macos-x86_64, runner: macos-13,        os_label: macOS, arch: x86_64, target: x86_64-apple-darwin }
+          - { platform: linux-x86_64, runner: ubuntu-22.04,    os_label: Linux, arch: x86_64, target: x86_64-unknown-linux-gnu }
+          - { platform: linux-arm64,  runner: ubuntu-24.04-arm, os_label: Linux, arch: arm64, target: aarch64-unknown-linux-gnu }
     steps:
       - uses: actions/checkout@v4
 
@@ -40,16 +45,28 @@ jobs:
       - name: Cache cargo + target
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          key: ${{ matrix.channel }}-${{ matrix.target }}
+
+      - name: Re-pin Sui crates to ${{ matrix.channel }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo_tag=$(grep -om1 '[a-z]*net-v[0-9.]*' Cargo.toml)
+          channel_tag=$(grep '^${{ matrix.channel }} ' channels.toml | cut -d'"' -f2)
+          if [ "$repo_tag" != "$channel_tag" ]; then
+            echo "re-pinning $repo_tag -> $channel_tag"
+            sed -i.bak "s/${repo_tag}/${channel_tag}/g" Cargo.toml && rm Cargo.toml.bak
+            cargo update sui-types sui-data-store sui-execution
+          fi
 
       - name: Build release binary
-        run: cargo build --release --locked --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }}
 
       - name: Package
         id: package
         shell: bash
         run: |
-          asset="aquarium-${{ matrix.os_label }}-${{ matrix.arch }}.tar.gz"
+          asset="aquarium-${{ matrix.channel }}-${{ matrix.os_label }}-${{ matrix.arch }}.tar.gz"
           bin="target/${{ matrix.target }}/release/aquarium"
           tar -czf "$asset" -C "$(dirname "$bin")" aquarium
           if command -v sha256sum >/dev/null 2>&1; then

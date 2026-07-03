@@ -1,0 +1,17 @@
+# Copyright (c) Inodra
+# SPDX-License-Identifier: Apache-2.0
+#
+# The current Sui release tag per channel. Single source of truth for:
+#   - Cargo.toml pins (kept in sync with `testnet`, the default channel)
+#   - CI channel legs and release binaries (pins rewritten per channel at build time)
+#   - install.sh (resolves the tag when building a channel from source)
+#   - the daily sui-bump workflow (opens a PR per channel that moved)
+#
+# testnet is the default: it ships the same protocol support ~a week ahead of
+# the corresponding mainnet cut, so the binary never trails a mainnet protocol
+# activation. mainnet is exact validator parity; devnet is a bleeding-edge
+# canary (CI-only, built from source via install.sh).
+
+mainnet = "mainnet-v1.74.1"
+testnet = "testnet-v1.74.1"
+devnet = "devnet-v1.74.0"

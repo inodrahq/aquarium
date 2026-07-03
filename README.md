@@ -60,17 +60,28 @@ See [`DESIGN.md`](./DESIGN.md) for the full architecture.
 
 ## Install
 
-**One-liner (prebuilt binary, no Rust needed):**
+**One-liner (wizard):**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/inodrahq/aquarium/main/install.sh | sh
 ```
 
-Downloads the binary for your platform (macOS / Linux, x86_64 / arm64) from
-GitHub Releases, verifies its checksum, and drops it on your PATH. Override with
-`AQUARIUM_VERSION` / `AQUARIUM_INSTALL_DIR`.
+A small wizard asks which Sui **channel** you want and whether to install a
+prebuilt binary (macOS / Linux, x86_64 / arm64, checksum-verified) or build
+from source:
 
-**With Cargo (builds from source):**
+| Channel | What you get |
+|---|---|
+| `testnet` *(default)* | Same protocol support as mainnet ~a week early — never trails a mainnet protocol activation. |
+| `mainnet` | Exact parity with the release mainnet validators run. |
+| `devnet` | Bleeding edge, cut from Mysten's tip (source builds only). |
+
+All channels fork **mainnet** state; the channel only selects which Sui release
+the Move VM is compiled from (`channels.toml` records the current tags).
+Non-interactive installs: set `AQUARIUM_CHANNEL` / `AQUARIUM_METHOD`
+(`prebuilt`|`source`), plus `AQUARIUM_VERSION` / `AQUARIUM_INSTALL_DIR`.
+
+**With Cargo (builds from source, testnet channel):**
 
 ```bash
 cargo install --git https://github.com/inodrahq/aquarium aquarium --locked
