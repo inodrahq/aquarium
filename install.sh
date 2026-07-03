@@ -5,7 +5,7 @@
 # Aquarium installer — downloads a prebuilt `aquarium` binary from GitHub
 # Releases and puts it on your PATH. Modeled on Mysten's suiup install.sh.
 #
-#   curl -fsSL https://raw.githubusercontent.com/inodra/aquarium/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/inodrahq/aquarium/main/install.sh | sh
 #
 # Environment overrides:
 #   AQUARIUM_VERSION      release tag to install (default: latest)
@@ -14,7 +14,7 @@
 
 set -eu
 
-REPO="inodra/aquarium"
+REPO="inodrahq/aquarium"
 BIN="aquarium"
 RELEASES_URL="https://github.com/${REPO}/releases"
 API_URL="https://api.github.com/repos/${REPO}/releases"

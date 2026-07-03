@@ -63,7 +63,7 @@ See [`DESIGN.md`](./DESIGN.md) for the full architecture.
 **One-liner (prebuilt binary, no Rust needed):**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/inodra/aquarium/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/inodrahq/aquarium/main/install.sh | sh
 ```
 
 Downloads the binary for your platform (macOS / Linux, x86_64 / arm64) from
@@ -73,7 +73,7 @@ GitHub Releases, verifies its checksum, and drops it on your PATH. Override with
 **With Cargo (builds from source):**
 
 ```bash
-cargo install --git https://github.com/inodra/aquarium aquarium --locked
+cargo install --git https://github.com/inodrahq/aquarium aquarium --locked
 ```
 
 First build compiles the Sui execution tree (a few minutes). Add
@@ -82,13 +82,13 @@ First build compiles the Sui execution tree (a few minutes). Add
 **Docker:**
 
 ```bash
-docker run --rm ghcr.io/inodra/aquarium info
+docker run --rm ghcr.io/inodrahq/aquarium info
 ```
 
 **From source:**
 
 ```bash
-git clone https://github.com/inodra/aquarium && cd aquarium
+git clone https://github.com/inodrahq/aquarium && cd aquarium
 cargo build --release                  # full binary (incl. the Move VM)
 cargo build --no-default-features      # read-only fork (lightweight, faster)
 ```
