@@ -39,6 +39,14 @@ struct OverlayState {
     tombstones: BTreeSet<ObjectID>,
     /// Transactions executed locally, by digest (Base58).
     transactions: BTreeMap<String, TransactionInfo>,
+    /// Digests of locally executed transactions in execution order (oldest
+    /// first), so the fork can present them as a synthetic checkpoint feed.
+    executed_order: Vec<String>,
+    /// Address balances (accumulator deposits) produced by local transactions,
+    /// keyed by `(owner, canonical coin type)`. On the live chain these writes
+    /// settle into accumulator objects via system transactions; a fork has no
+    /// settlement, so the net amounts are tracked here directly.
+    address_balances: BTreeMap<(sui_types::base_types::SuiAddress, String), u128>,
 }
 
 /// A writable fork overlay on top of a read-only mainnet data store `S`.
@@ -82,8 +90,9 @@ impl<S> OverlayStore<S> {
     }
 
     /// Atomically apply a transaction's effects to the overlay: written objects
-    /// are inserted (clearing any tombstone), deleted ids are tombstoned, and
-    /// the transaction is recorded — all under one lock.
+    /// are inserted (clearing any tombstone), deleted ids are tombstoned,
+    /// accumulator (address-balance) writes are netted, and the transaction is
+    /// recorded — all under one lock.
     ///
     /// Crate-internal: the supported way to mutate a fork is [`Fork::execute`],
     /// which serializes commits. Direct callers would bypass that serialization.
@@ -92,6 +101,7 @@ impl<S> OverlayStore<S> {
         &self,
         written: &[Object],
         deleted: &[ObjectID],
+        accumulator_events: &[sui_types::accumulator_event::AccumulatorEvent],
         digest: String,
         info: TransactionInfo,
     ) {
@@ -105,7 +115,34 @@ impl<S> OverlayStore<S> {
             state.objects.remove(id);
             state.tombstones.insert(*id);
         }
-        state.transactions.insert(digest, info);
+        for event in accumulator_events {
+            apply_accumulator_event(&mut state.address_balances, event);
+        }
+        if state.transactions.insert(digest.clone(), info).is_none() {
+            state.executed_order.push(digest);
+        }
+    }
+
+    /// The most recently executed local transactions (newest first, up to
+    /// `limit`), as `(digest, info)` — powers the fork's synthetic checkpoint.
+    pub fn recent_executed(&self, limit: usize) -> Vec<(String, TransactionInfo)> {
+        let state = self.state.read().expect("overlay state poisoned");
+        state
+            .executed_order
+            .iter()
+            .rev()
+            .take(limit)
+            .filter_map(|d| state.transactions.get(d).map(|i| (d.clone(), i.clone())))
+            .collect()
+    }
+
+    /// Total number of transactions executed locally against the fork.
+    pub fn executed_count(&self) -> usize {
+        self.state
+            .read()
+            .expect("overlay state poisoned")
+            .executed_order
+            .len()
     }
 
     /// Commit a single written object (clearing any tombstone). Test helper;
@@ -135,6 +172,111 @@ impl<S> OverlayStore<S> {
             .objects
             .get(id)
             .cloned()
+    }
+
+    /// Snapshot of every object currently held in the local overlay.
+    pub fn overlay_objects(&self) -> Vec<Object> {
+        self.state
+            .read()
+            .expect("overlay state poisoned")
+            .objects
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    /// Ids the overlay has an opinion about (locally written or deleted): reads
+    /// of these must not fall through to mainnet for "current" state.
+    pub fn overlay_touched_ids(&self) -> BTreeSet<ObjectID> {
+        let state = self.state.read().expect("overlay state poisoned");
+        state
+            .objects
+            .keys()
+            .chain(state.tombstones.iter())
+            .copied()
+            .collect()
+    }
+
+    /// Net address balance (accumulator deposits minus withdrawals) produced by
+    /// locally executed transactions for `(owner, coin type)`. `coin_type` is
+    /// the coin's canonical type string, e.g. the output of
+    /// `TypeTag::to_canonical_string(true)` for `0x2::sui::SUI`.
+    ///
+    /// A fork starts with mainnet's settled address balances unreadable through
+    /// object queries (they live in accumulator child objects); this tracks the
+    /// *local* delta, which for fresh fork-only accounts is the whole balance.
+    pub fn address_balance(
+        &self,
+        owner: sui_types::base_types::SuiAddress,
+        coin_type: &str,
+    ) -> u128 {
+        self.state
+            .read()
+            .expect("overlay state poisoned")
+            .address_balances
+            .get(&(owner, coin_type.to_string()))
+            .copied()
+            .unwrap_or(0)
+    }
+}
+
+/// Net an accumulator write into the local address-balance map. Only
+/// `Balance<T>` integer accumulators are represented (the only kind
+/// `coin::send_funds` / address-balance transfers produce today); other
+/// accumulator kinds (e.g. event-stream digests) are ignored.
+#[cfg(feature = "execute")]
+fn apply_accumulator_event(
+    balances: &mut BTreeMap<(sui_types::base_types::SuiAddress, String), u128>,
+    event: &sui_types::accumulator_event::AccumulatorEvent,
+) {
+    use sui_types::TypeTag;
+    use sui_types::effects::{AccumulatorOperation, AccumulatorValue};
+
+    // The accumulator's type is `Balance<T>`; key the map by the inner `T`
+    // (the coin type callers query with).
+    let TypeTag::Struct(ty) = &event.write.address.ty else {
+        return;
+    };
+    if ty.name.as_str() != "Balance" || ty.type_params.len() != 1 {
+        return;
+    }
+    let coin_type = ty.type_params[0].to_canonical_string(true);
+    let AccumulatorValue::Integer(amount) = event.write.value else {
+        return;
+    };
+    let entry = balances
+        .entry((event.write.address.address, coin_type))
+        .or_insert(0);
+    match event.write.operation {
+        AccumulatorOperation::Merge => *entry = entry.saturating_add(amount as u128),
+        AccumulatorOperation::Split => *entry = entry.saturating_sub(amount as u128),
+    }
+}
+
+/// Retry a backing-store read a few times on error, with exponential backoff.
+///
+/// Fork "current" state is read lazily through Mysten's public GraphQL
+/// endpoint; under load (e.g. a CLMM swap that walks many tick dynamic fields)
+/// it occasionally drops a single request. The read is idempotent and a dropped
+/// read, left unhandled, surfaces to the Move VM as a `STORAGE_ERROR` and
+/// *panics* the execution — so a bounded retry turns a transient blip into a
+/// short delay instead of a failed transaction. Only errors are retried; a
+/// genuine "object absent" is `Ok(None)` and returns immediately.
+fn with_retry<T>(mut read: impl FnMut() -> Result<T, Error>) -> Result<T, Error> {
+    const MAX_ATTEMPTS: u32 = 5;
+    let mut attempt: u32 = 0;
+    loop {
+        match read() {
+            Ok(value) => return Ok(value),
+            Err(e) => {
+                attempt += 1;
+                if attempt >= MAX_ATTEMPTS {
+                    return Err(e);
+                }
+                // 150ms, 300ms, 600ms, 1200ms.
+                std::thread::sleep(std::time::Duration::from_millis(150 * (1 << (attempt - 1))));
+            }
+        }
     }
 }
 
@@ -195,7 +337,7 @@ where
         }
 
         if !miss_keys.is_empty() {
-            let fetched = self.inner.get_objects(&miss_keys)?;
+            let fetched = with_retry(|| self.inner.get_objects(&miss_keys))?;
             for (slot, value) in miss_slots.into_iter().zip(fetched) {
                 out[slot] = value;
             }
@@ -211,11 +353,11 @@ where
     // A fork does not advance epochs: epoch data and protocol config are exactly
     // mainnet's at the fork point, served (and cached) by the backing store.
     fn epoch_info(&self, epoch: u64) -> Result<Option<EpochData>, Error> {
-        self.inner.epoch_info(epoch)
+        with_retry(|| self.inner.epoch_info(epoch))
     }
 
     fn protocol_config(&self, epoch: u64) -> Result<Option<ProtocolConfig>, Error> {
-        self.inner.protocol_config(epoch)
+        with_retry(|| self.inner.protocol_config(epoch))
     }
 }
 
@@ -236,15 +378,43 @@ where
         {
             return Ok(Some(info.clone()));
         }
-        self.inner.transaction_data_and_effects(tx_digest)
+        with_retry(|| self.inner.transaction_data_and_effects(tx_digest))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
     use sui_types::base_types::{SequenceNumber, SuiAddress};
     use sui_types::object::Owner;
+
+    #[test]
+    fn with_retry_recovers_after_transient_errors() {
+        let attempts = Cell::new(0u32);
+        let result: Result<u32, Error> = with_retry(|| {
+            let n = attempts.get() + 1;
+            attempts.set(n);
+            if n < 3 {
+                Err(anyhow::anyhow!("transient"))
+            } else {
+                Ok(n)
+            }
+        });
+        assert_eq!(result.unwrap(), 3, "succeeds on the third try");
+        assert_eq!(attempts.get(), 3);
+    }
+
+    #[test]
+    fn with_retry_gives_up_and_returns_last_error() {
+        let attempts = Cell::new(0u32);
+        let result: Result<u32, Error> = with_retry(|| {
+            attempts.set(attempts.get() + 1);
+            Err(anyhow::anyhow!("always fails"))
+        });
+        assert!(result.is_err());
+        assert_eq!(attempts.get(), 5, "stops after MAX_ATTEMPTS");
+    }
 
     /// Minimal in-memory backing store standing in for mainnet.
     #[derive(Default)]

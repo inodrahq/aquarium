@@ -18,6 +18,7 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 serde_json = "1"
+tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 # --- Sui crates (reference: github.com/MystenLabs/sui @ testnet-v1.74.1) ---
@@ -30,12 +31,43 @@ sui-types = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.74.1"
 sui-execution = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.74.1", optional = true }
 prometheus = { version = "0.14", optional = true }
 
+# --- gRPC façade (`serve` feature) ---
+# Generated sui.rpc.v2 proto types + tonic server stubs, from Mysten's Rust SDK.
+# The rev is chosen to match the sui-types tag above (BCS wire compatibility).
+sui-rpc = { git = "https://github.com/MystenLabs/sui-rust-sdk.git", rev = "f383e14deec809886aa5e67ce734105a3883f1d4", optional = true }
+sui-sdk-types = { git = "https://github.com/MystenLabs/sui-rust-sdk.git", rev = "f383e14deec809886aa5e67ce734105a3883f1d4", optional = true }
+bcs = { version = "0.1", optional = true }
+serde = { version = "1", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"], optional = true }
+tonic = { version = "0.14.2", optional = true }
+tonic-reflection = { version = "0.14.2", optional = true }
+# gRPC-Web + CORS so a browser (e.g. the Inodra explorer's localnet mode, which
+# uses @mysten/sui's grpc-web transport) can talk to the fork directly.
+tonic-web = { version = "0.14.2", optional = true }
+tower-http = { version = "0.6", features = ["cors"], optional = true }
+prost-types = { version = "0.14.1", optional = true }
+
 [features]
 # `execute` pulls in the Move VM / adapter so a fork can run new transactions.
 # On by default so released/installed binaries can run transactions; build with
 # `--no-default-features` for a lightweight read-only binary (no Sui VM tree).
-default = ["execute"]
+default = ["execute", "serve"]
 execute = ["dep:sui-execution", "dep:prometheus"]
+# `serve` exposes the fork over a local sui.rpc.v2 gRPC endpoint (`aquarium
+# serve`) so standard tooling (grpcurl, SDKs) can talk to the fork like a node.
+serve = [
+    "execute",
+    "dep:sui-rpc",
+    "dep:sui-sdk-types",
+    "dep:bcs",
+    "dep:serde",
+    "dep:tokio",
+    "dep:tonic",
+    "dep:tonic-reflection",
+    "dep:tonic-web",
+    "dep:tower-http",
+    "dep:prost-types",
+]
 
 [profile.dev]
 # The Sui execution tree is large; keep iteration tolerable.

@@ -80,6 +80,16 @@ impl Gql {
             .ok_or_else(|| anyhow!("could not read epoch for checkpoint {checkpoint}: {data}"))
     }
 
+    /// The digest of a given checkpoint (Base58), used to label the fork point.
+    pub fn checkpoint_digest(&self, checkpoint: u64) -> Result<String> {
+        let q = format!("{{ checkpoint(sequenceNumber: {checkpoint}) {{ digest }} }}");
+        let data = self.query(&q)?;
+        data["checkpoint"]["digest"]
+            .as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| anyhow!("could not read digest for checkpoint {checkpoint}: {data}"))
+    }
+
     /// The chain identifier (genesis checkpoint digest), useful as a sanity check.
     pub fn chain_identifier(&self) -> Result<String> {
         let data = self.query("{ chainIdentifier }")?;
@@ -87,5 +97,47 @@ impl Gql {
             .as_str()
             .map(|s| s.to_string())
             .ok_or_else(|| anyhow!("could not read chainIdentifier: {data}"))
+    }
+
+    /// `(object id, value)` of the `Coin<coin_type>` objects owned by `owner`
+    /// on **live** mainnet (GraphQL cannot enumerate by owner at a pinned
+    /// checkpoint). Paginates up to a sanity cap; used as the mainnet-side
+    /// contribution to fork balance queries.
+    pub fn owned_coin_values(&self, owner: &str, coin_type: &str) -> Result<Vec<(String, u64)>> {
+        const PAGE_CAP: usize = 8;
+        let mut out = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..PAGE_CAP {
+            let after = cursor
+                .as_deref()
+                .map(|c| format!(", after: \"{c}\""))
+                .unwrap_or_default();
+            let q = format!(
+                "{{ address(address: \"{owner}\") {{ objects(filter: {{ type: \"0x2::coin::Coin<{coin_type}>\" }}, first: 50{after}) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ address contents {{ json }} }} }} }} }}"
+            );
+            let data = self.query(&q)?;
+            let objects = &data["address"]["objects"];
+            for node in objects["nodes"].as_array().into_iter().flatten() {
+                let id = node["address"]
+                    .as_str()
+                    .ok_or_else(|| anyhow!("coin node missing address: {node}"))?;
+                let balance = &node["contents"]["json"]["balance"];
+                let value = balance
+                    .as_u64()
+                    .or_else(|| balance.as_str().and_then(|b| b.parse::<u64>().ok()))
+                    .ok_or_else(|| anyhow!("coin node missing balance: {node}"))?;
+                out.push((id.to_string(), value));
+            }
+            if objects["pageInfo"]["hasNextPage"].as_bool() != Some(true) {
+                return Ok(out);
+            }
+            cursor = objects["pageInfo"]["endCursor"].as_str().map(String::from);
+        }
+        tracing::warn!(
+            owner,
+            coin_type,
+            "owned-coin enumeration truncated at page cap"
+        );
+        Ok(out)
     }
 }

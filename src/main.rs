@@ -52,6 +52,19 @@ enum Command {
         #[arg(long, default_value_t = 1)]
         repeat: u32,
     },
+    /// Serve the fork over a local sui.rpc.v2 gRPC endpoint so standard Sui
+    /// tooling (grpcurl, SDKs) can read it and execute transactions against it.
+    /// Signatures are NOT verified — any mainnet account can be impersonated
+    /// locally. The real chain is never touched.
+    #[cfg(feature = "serve")]
+    Serve {
+        /// Checkpoint to fork from (defaults to the latest executed checkpoint).
+        #[arg(long)]
+        checkpoint: Option<u64>,
+        /// Port to listen on (binds 127.0.0.1).
+        #[arg(long, default_value_t = 9123)]
+        port: u16,
+    },
 }
 
 fn resolve_checkpoint(gql: &Gql, requested: Option<u64>) -> Result<u64> {
@@ -119,6 +132,28 @@ fn main() -> Result<()> {
             repeat,
         } => {
             demo(&gql, &sender, &coin, checkpoint, repeat)?;
+        }
+        #[cfg(feature = "serve")]
+        Command::Serve { checkpoint, port } => {
+            let cp = resolve_checkpoint(&gql, checkpoint)?;
+            let chain_id = gql.chain_identifier()?;
+            let epoch = gql.checkpoint_epoch(cp)?;
+            let fork_digest = gql.checkpoint_digest(cp)?;
+            let fork = MainnetFork::mainnet(cp)?;
+            let vm = fork.vm()?;
+            println!("aquarium gRPC fork of mainnet");
+            println!("  chain id         {chain_id}");
+            println!("  fork checkpoint  {cp}  (epoch {epoch})");
+            println!("  reference gas    {} MIST", vm.reference_gas_price());
+            println!("  listening on     127.0.0.1:{port}  (sui.rpc.v2, reflection enabled)");
+            println!("\ntry:");
+            println!(
+                "  grpcurl -plaintext 127.0.0.1:{port} sui.rpc.v2.LedgerService.GetServiceInfo"
+            );
+            println!(
+                "  grpcurl -plaintext -d '{{\"object_id\":\"0x6\"}}' 127.0.0.1:{port} sui.rpc.v2.LedgerService.GetObject"
+            );
+            aquarium::serve::run(fork, vm, chain_id, epoch, fork_digest, port)?;
         }
     }
     Ok(())

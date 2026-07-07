@@ -21,6 +21,9 @@ pub mod store;
 #[cfg(feature = "execute")]
 pub mod engine;
 
+#[cfg(feature = "serve")]
+pub mod serve;
+
 pub use fork::{Fork, MainnetFork};
 pub use gql::Gql;
 pub use store::OverlayStore;

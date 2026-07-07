@@ -162,13 +162,24 @@ where
         vm: &crate::engine::Vm,
         tx_data: sui_types::transaction::TransactionData,
     ) -> Result<crate::engine::ExecutionOutcome> {
-        let _serialize = self.execution_lock.lock().expect("execution lock poisoned");
+        // Recover from a poisoned lock rather than propagating the panic: a
+        // previous execution that panicked (e.g. deep in the Move VM on a
+        // malformed input) must not brick every subsequent transaction. The
+        // guarded data is just a serialization token, so the poisoned inner
+        // value is safe to reuse.
+        let _serialize = self
+            .execution_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let outcome = vm.execute(&self.store, self.fork_checkpoint, tx_data)?;
-        // Apply writes, deletions and the transaction record atomically, so a
-        // concurrent reader never sees a half-committed transaction.
+        // Apply writes, deletions, address-balance (accumulator) deposits and
+        // the transaction record atomically, so a concurrent reader never sees
+        // a half-committed transaction.
+        use sui_types::effects::TransactionEffectsAPI;
         self.store.commit(
             &outcome.written,
             &outcome.deleted,
+            &outcome.effects.accumulator_events(),
             outcome.digest.to_string(),
             sui_data_store::TransactionInfo {
                 data: outcome.tx_data.clone(),

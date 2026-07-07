@@ -120,6 +120,11 @@ impl Vm {
         let gas_status = if tx_data.kind().is_system_tx() {
             SuiGasStatus::new_unmetered()
         } else {
+            // The fork executes replay-style, skipping mainnet's pre-execution
+            // validity checks. Re-apply the gas-payment check here: otherwise a
+            // budget above the gas coins' balance underflows the gas charger and
+            // panics mid-execution instead of failing cleanly.
+            check_gas_payment(store, &tx_data, self.reference_gas_price)?;
             SuiGasStatus::new(
                 tx_data.gas_data().budget,
                 tx_data.gas_data().price,
@@ -183,6 +188,47 @@ impl Vm {
     }
 }
 
+/// Replicate the parts of Sui's pre-execution gas check that the fork skips
+/// (it runs unvalidated, replay-style). Returns errors prefixed `InsufficientGas`
+/// / `InvalidGasPrice` so callers can surface a precise status instead of the
+/// gas charger panicking on an underflow.
+fn check_gas_payment<S: DataObjectStore>(
+    store: &S,
+    tx_data: &TransactionData,
+    reference_gas_price: u64,
+) -> Result<()> {
+    use sui_types::gas_coin::GasCoin;
+
+    let gas = tx_data.gas_data();
+    // An empty payment vector means the transaction pays gas from the sender's
+    // address balance (gasless / v2 address-balance gas), not from coins — there
+    // are no coins to sum, so leave that path to the executor.
+    if gas.payment.is_empty() {
+        return Ok(());
+    }
+    if gas.price < reference_gas_price {
+        anyhow::bail!(
+            "InvalidGasPrice: gas price {} is below the reference gas price {reference_gas_price}",
+            gas.price
+        );
+    }
+    let mut balance: u128 = 0;
+    for (id, version, _digest) in &gas.payment {
+        let object = fetch_one(store, *id, VersionQuery::Version(version.value()))?
+            .ok_or_else(|| anyhow!("gas coin {id} v{} not found", version.value()))?;
+        let coin = GasCoin::try_from(&object)
+            .map_err(|e| anyhow!("gas payment object {id} is not a SUI coin: {e}"))?;
+        balance += coin.value() as u128;
+    }
+    if balance < gas.budget as u128 {
+        anyhow::bail!(
+            "InsufficientGas: gas payment balance {balance} MIST is below the gas budget {} MIST",
+            gas.budget
+        );
+    }
+    Ok(())
+}
+
 /// Resolve the objects a transaction reads from the store, mirroring the kinds
 /// the runtime expects: packages and shared objects at the fork checkpoint,
 /// owned objects at the exact version the transaction pins.
@@ -215,6 +261,20 @@ fn resolve_input_objects<S: DataObjectStore>(
                     .ok_or_else(|| {
                         anyhow!("owned object {object_id} v{} not found", version.value())
                     })?;
+                // A tx may only pass an immutable or address-owned object as an
+                // `ImmOrOwnedMoveObject`. Passing an object owned by another
+                // object (a dynamic-field child) or a shared object here makes
+                // the executor panic ("Unexpected owner"); catch it as a clean
+                // error, as mainnet's input validation would.
+                use sui_types::object::Owner;
+                match object.owner() {
+                    Owner::AddressOwner(_) | Owner::Immutable => {}
+                    other => anyhow::bail!(
+                        "InvalidInput: object {object_id} is passed as an owned input but its \
+                         owner is {other:?} (only address-owned or immutable objects may be used \
+                         this way)"
+                    ),
+                }
                 // Re-key to the object's actual reference (id, version, digest).
                 let input_object_kind =
                     InputObjectKind::ImmOrOwnedMoveObject(object.compute_object_reference());

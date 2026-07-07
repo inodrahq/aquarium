@@ -269,13 +269,24 @@ name = "aquarium"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "bcs",
  "clap",
  "prometheus",
+ "prost-types",
  "reqwest",
+ "serde",
  "serde_json",
  "sui-data-store",
  "sui-execution",
+ "sui-rpc 0.3.1 (git+https://github.com/MystenLabs/sui-rust-sdk.git?rev=f383e14deec809886aa5e67ce734105a3883f1d4)",
+ "sui-sdk-types 0.3.1 (git+https://github.com/MystenLabs/sui-rust-sdk.git?rev=f383e14deec809886aa5e67ce734105a3883f1d4)",
  "sui-types",
+ "tokio",
+ "tonic",
+ "tonic-reflection",
+ "tonic-web",
+ "tower-http 0.6.11",
+ "tracing",
  "tracing-subscriber",
 ]
 
@@ -5955,7 +5966,7 @@ dependencies = [
  "blst",
  "rand_core 0.6.4",
  "signature 2.2.0",
- "sui-sdk-types",
+ "sui-sdk-types 0.3.1 (git+https://github.com/MystenLabs/sui-rust-sdk.git?rev=43c5bc13202ae398b1519a3eead1f40df8ca277b)",
 ]
 
 [[package]]
@@ -6232,7 +6243,30 @@ dependencies = [
  "serde",
  "serde_json",
  "sui-crypto",
- "sui-sdk-types",
+ "sui-sdk-types 0.3.1 (git+https://github.com/MystenLabs/sui-rust-sdk.git?rev=43c5bc13202ae398b1519a3eead1f40df8ca277b)",
+ "tap",
+ "tokio",
+ "tonic",
+ "tonic-prost",
+ "tower 0.5.3",
+]
+
+[[package]]
+name = "sui-rpc"
+version = "0.3.1"
+source = "git+https://github.com/MystenLabs/sui-rust-sdk.git?rev=f383e14deec809886aa5e67ce734105a3883f1d4#f383e14deec809886aa5e67ce734105a3883f1d4"
+dependencies = [
+ "base64 0.22.1",
+ "bcs",
+ "bytes",
+ "futures",
+ "http",
+ "http-body",
+ "prost",
+ "prost-types",
+ "serde",
+ "serde_json",
+ "sui-sdk-types 0.3.1 (git+https://github.com/MystenLabs/sui-rust-sdk.git?rev=f383e14deec809886aa5e67ce734105a3883f1d4)",
  "tap",
  "tokio",
  "tonic",
@@ -6244,6 +6278,27 @@ dependencies = [
 name = "sui-sdk-types"
 version = "0.3.1"
 source = "git+https://github.com/MystenLabs/sui-rust-sdk.git?rev=43c5bc13202ae398b1519a3eead1f40df8ca277b#43c5bc13202ae398b1519a3eead1f40df8ca277b"
+dependencies = [
+ "base64ct",
+ "bcs",
+ "blake2",
+ "bnum",
+ "bs58 0.5.1",
+ "bytes",
+ "bytestring",
+ "itertools 0.14.0",
+ "roaring",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "serde_with",
+ "winnow 0.7.15",
+]
+
+[[package]]
+name = "sui-sdk-types"
+version = "0.3.1"
+source = "git+https://github.com/MystenLabs/sui-rust-sdk.git?rev=f383e14deec809886aa5e67ce734105a3883f1d4#f383e14deec809886aa5e67ce734105a3883f1d4"
 dependencies = [
  "base64ct",
  "bcs",
@@ -6326,8 +6381,8 @@ dependencies = [
  "sui-enum-compat-util",
  "sui-macros",
  "sui-protocol-config",
- "sui-rpc",
- "sui-sdk-types",
+ "sui-rpc 0.3.1 (git+https://github.com/MystenLabs/sui-rust-sdk.git?rev=43c5bc13202ae398b1519a3eead1f40df8ca277b)",
+ "sui-sdk-types 0.3.1 (git+https://github.com/MystenLabs/sui-rust-sdk.git?rev=43c5bc13202ae398b1519a3eead1f40df8ca277b)",
  "tap",
  "thiserror 1.0.69",
  "tonic",
@@ -6732,6 +6787,38 @@ dependencies = [
  "bytes",
  "prost",
  "tonic",
+]
+
+[[package]]
+name = "tonic-reflection"
+version = "0.14.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "acccd136a4bf19810a1fde9c74edc6129b42a66b44d0c1c8aaa67aeb49a146a7"
+dependencies = [
+ "prost",
+ "prost-types",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tonic-prost",
+]
+
+[[package]]
+name = "tonic-web"
+version = "0.14.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b5e6a1b6319ca4b61a4c0f0c94d439c8f3ed344cca56fe0df40e1fe4be11380b"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "http",
+ "http-body",
+ "pin-project",
+ "tokio-stream",
+ "tonic",
+ "tower-layer",
+ "tower-service",
+ "tracing",
 ]
 
 [[package]]
