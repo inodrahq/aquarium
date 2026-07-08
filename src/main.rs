@@ -61,9 +61,12 @@ enum Command {
         /// Checkpoint to fork from (defaults to the latest executed checkpoint).
         #[arg(long)]
         checkpoint: Option<u64>,
-        /// Port to listen on (binds 127.0.0.1).
+        /// Port to listen on for gRPC (binds 127.0.0.1).
         #[arg(long, default_value_t = 9123)]
         port: u16,
+        /// Port for the JSON cheat-control API (defaults to `port` + 1).
+        #[arg(long)]
+        control_port: Option<u16>,
     },
 }
 
@@ -134,8 +137,13 @@ fn main() -> Result<()> {
             demo(&gql, &sender, &coin, checkpoint, repeat)?;
         }
         #[cfg(feature = "serve")]
-        Command::Serve { checkpoint, port } => {
+        Command::Serve {
+            checkpoint,
+            port,
+            control_port,
+        } => {
             let cp = resolve_checkpoint(&gql, checkpoint)?;
+            let control_port = control_port.unwrap_or(port + 1);
             let chain_id = gql.chain_identifier()?;
             let epoch = gql.checkpoint_epoch(cp)?;
             let fork_digest = gql.checkpoint_digest(cp)?;
@@ -145,15 +153,15 @@ fn main() -> Result<()> {
             println!("  chain id         {chain_id}");
             println!("  fork checkpoint  {cp}  (epoch {epoch})");
             println!("  reference gas    {} MIST", vm.reference_gas_price());
-            println!("  listening on     127.0.0.1:{port}  (sui.rpc.v2, reflection enabled)");
+            println!("  gRPC on          127.0.0.1:{port}  (sui.rpc.v2, reflection enabled)");
+            println!("  cheat control on 127.0.0.1:{control_port}  (JSON HTTP)");
             println!("\ntry:");
             println!(
                 "  grpcurl -plaintext 127.0.0.1:{port} sui.rpc.v2.LedgerService.GetServiceInfo"
             );
-            println!(
-                "  grpcurl -plaintext -d '{{\"object_id\":\"0x6\"}}' 127.0.0.1:{port} sui.rpc.v2.LedgerService.GetObject"
-            );
-            aquarium::serve::run(fork, vm, chain_id, epoch, fork_digest, port)?;
+            println!("  curl 127.0.0.1:{control_port}/status");
+            println!("  curl -XPOST 127.0.0.1:{control_port}/epoch/advance -d '{{\"count\":1}}'");
+            aquarium::serve::run(fork, vm, chain_id, fork_digest, port, control_port)?;
         }
     }
     Ok(())

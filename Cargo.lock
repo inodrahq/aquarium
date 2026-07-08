@@ -269,8 +269,12 @@ name = "aquarium"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "axum",
+ "base64 0.22.1",
  "bcs",
  "clap",
+ "move-binary-format",
+ "move-core-types",
  "prometheus",
  "prost-types",
  "reqwest",
@@ -282,6 +286,7 @@ dependencies = [
  "sui-sdk-types 0.3.1 (git+https://github.com/MystenLabs/sui-rust-sdk.git?rev=f383e14deec809886aa5e67ce734105a3883f1d4)",
  "sui-types",
  "tokio",
+ "tokio-stream",
  "tonic",
  "tonic-reflection",
  "tonic-web",
@@ -611,6 +616,7 @@ dependencies = [
  "tower 0.5.3",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -629,6 +635,7 @@ dependencies = [
  "sync_wrapper",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]

@@ -123,6 +123,19 @@ impl<S> OverlayStore<S> {
         }
     }
 
+    /// Force an object into the overlay directly, outside transaction execution
+    /// — the primitive behind the fork's "cheat" controls (advance the clock,
+    /// override an oracle's price object, etc., analogous to anvil's
+    /// `setStorageAt`). The caller is responsible for handing over a well-formed
+    /// object at a fresh version; any tombstone for the id is cleared.
+    #[cfg(feature = "execute")]
+    pub(crate) fn set_object(&self, object: Object) {
+        let mut state = self.state.write().expect("overlay state poisoned");
+        let id = object.id();
+        state.tombstones.remove(&id);
+        state.objects.insert(id, object);
+    }
+
     /// The most recently executed local transactions (newest first, up to
     /// `limit`), as `(digest, info)` — powers the fork's synthetic checkpoint.
     pub fn recent_executed(&self, limit: usize) -> Vec<(String, TransactionInfo)> {
@@ -194,6 +207,23 @@ impl<S> OverlayStore<S> {
             .keys()
             .chain(state.tombstones.iter())
             .copied()
+            .collect()
+    }
+
+    /// Every `(canonical coin type, net amount)` address balance the overlay has
+    /// accrued for `owner` (locally deposited via accumulator writes). Powers
+    /// `ListBalances`' address-balance contribution.
+    pub fn address_balances_of(
+        &self,
+        owner: sui_types::base_types::SuiAddress,
+    ) -> Vec<(String, u128)> {
+        self.state
+            .read()
+            .expect("overlay state poisoned")
+            .address_balances
+            .iter()
+            .filter(|((o, _), _)| *o == owner)
+            .map(|((_, ty), amount)| (ty.clone(), *amount))
             .collect()
     }
 

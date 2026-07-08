@@ -56,12 +56,19 @@ pub struct ExecutionOutcome {
 }
 
 /// The fork VM, pinned to one protocol version / epoch.
+///
+/// `epoch` and `epoch_start_timestamp_ms` are interior-mutable (atomics): a
+/// fork can *shallow-advance* the epoch (see [`Vm::advance_epoch`]) so that
+/// `tx_context::epoch()` / `epoch_timestamp_ms()` report a later epoch, which
+/// unblocks epoch-gated logic (e.g. maturing a staking withdrawal) without a
+/// real end-of-epoch settlement. The `protocol_config`/`executor` stay fixed —
+/// advancing within one protocol version reuses the same executor.
 pub struct Vm {
     executor: Arc<dyn Executor + Send + Sync>,
     execution_metrics: Arc<ExecutionMetrics>,
     protocol_config: ProtocolConfig,
-    epoch: u64,
-    epoch_start_timestamp_ms: u64,
+    epoch: std::sync::atomic::AtomicU64,
+    epoch_start_timestamp_ms: std::sync::atomic::AtomicU64,
     reference_gas_price: u64,
 }
 
@@ -82,8 +89,8 @@ impl Vm {
             executor,
             execution_metrics,
             protocol_config,
-            epoch,
-            epoch_start_timestamp_ms,
+            epoch: std::sync::atomic::AtomicU64::new(epoch),
+            epoch_start_timestamp_ms: std::sync::atomic::AtomicU64::new(epoch_start_timestamp_ms),
             reference_gas_price,
         })
     }
@@ -98,9 +105,30 @@ impl Vm {
         self.reference_gas_price
     }
 
-    /// The fork's epoch.
+    /// The fork's current epoch (may have been shallow-advanced).
     pub fn epoch(&self) -> u64 {
+        self.epoch.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The fork's current epoch-start timestamp (ms).
+    pub fn epoch_start_timestamp_ms(&self) -> u64 {
+        self.epoch_start_timestamp_ms
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Shallow-advance the epoch by `count` epochs, moving the epoch-start
+    /// timestamp to `new_start_timestamp_ms`. Subsequent transactions see the
+    /// bumped epoch via `TxContext`. This does **not** run a real end-of-epoch
+    /// change (no staking-reward distribution, no validator rotation, and the
+    /// on-chain `SuiSystemState` at `0x5` is left untouched) — it only crosses
+    /// the epoch boundary as the VM presents it, which is what epoch-gated Move
+    /// checks read. Returns the new epoch.
+    pub fn advance_epoch(&self, count: u64, new_start_timestamp_ms: u64) -> u64 {
+        self.epoch_start_timestamp_ms
+            .store(new_start_timestamp_ms, std::sync::atomic::Ordering::Relaxed);
         self.epoch
+            .fetch_add(count.max(1), std::sync::atomic::Ordering::Relaxed)
+            + count.max(1)
     }
 
     /// Execute `tx_data` against `store` (reads pinned at `fork_checkpoint`).
@@ -148,6 +176,11 @@ impl Vm {
             Some(errors) => ExecutionOrEarlyError::failed(errors, None),
         };
 
+        // Snapshot the (interior-mutable) epoch parameters for this execution;
+        // the executor takes `&epoch`.
+        let epoch = self.epoch();
+        let epoch_start_timestamp_ms = self.epoch_start_timestamp_ms();
+
         let runtime_store = RuntimeStore::new(store, fork_checkpoint);
         let mut trace = None;
         let (inner_store, gas_status, effects, _timing, status) = self
@@ -158,8 +191,8 @@ impl Vm {
                 self.execution_metrics.clone(),
                 /* enable_expensive_checks */ false,
                 execution_params,
-                &self.epoch,
-                self.epoch_start_timestamp_ms,
+                &epoch,
+                epoch_start_timestamp_ms,
                 checked,
                 tx_data.gas_data().clone(),
                 gas_status,

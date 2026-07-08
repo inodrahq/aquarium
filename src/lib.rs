@@ -22,6 +22,15 @@ pub mod store;
 pub mod engine;
 
 #[cfg(feature = "serve")]
+pub mod cheats;
+
+#[cfg(feature = "serve")]
+pub mod control;
+
+#[cfg(feature = "serve")]
+pub mod movedesc;
+
+#[cfg(feature = "serve")]
 pub mod serve;
 
 pub use fork::{Fork, MainnetFork};

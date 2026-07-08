@@ -38,7 +38,7 @@ sui-rpc = { git = "https://github.com/MystenLabs/sui-rust-sdk.git", rev = "f383e
 sui-sdk-types = { git = "https://github.com/MystenLabs/sui-rust-sdk.git", rev = "f383e14deec809886aa5e67ce734105a3883f1d4", optional = true }
 bcs = { version = "0.1", optional = true }
 serde = { version = "1", optional = true }
-tokio = { version = "1", features = ["rt-multi-thread", "macros"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"], optional = true }
 tonic = { version = "0.14.2", optional = true }
 tonic-reflection = { version = "0.14.2", optional = true }
 # gRPC-Web + CORS so a browser (e.g. the Inodra explorer's localnet mode, which
@@ -46,6 +46,16 @@ tonic-reflection = { version = "0.14.2", optional = true }
 tonic-web = { version = "0.14.2", optional = true }
 tower-http = { version = "0.6", features = ["cors"], optional = true }
 prost-types = { version = "0.14.1", optional = true }
+tokio-stream = { version = "0.1", optional = true }
+# Anvil-style cheat control API (set clock / advance epoch / override objects).
+# A small JSON/HTTP surface kept off the standard sui.rpc.v2 gRPC endpoint so
+# that surface stays a faithful node twin.
+axum = { version = "0.8", optional = true }
+base64 = { version = "0.22", optional = true }
+# Bytecode parsing for MovePackageService (GetDatatype / GetFunction). Pinned to
+# the same Sui tag as sui-types for CompiledModule wire compatibility.
+move-binary-format = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.74.1", optional = true }
+move-core-types = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.74.1", optional = true }
 
 [features]
 # `execute` pulls in the Move VM / adapter so a fork can run new transactions.
@@ -67,6 +77,11 @@ serve = [
     "dep:tonic-web",
     "dep:tower-http",
     "dep:prost-types",
+    "dep:tokio-stream",
+    "dep:axum",
+    "dep:base64",
+    "dep:move-binary-format",
+    "dep:move-core-types",
 ]
 
 [profile.dev]
