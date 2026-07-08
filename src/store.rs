@@ -53,6 +53,24 @@ pub(crate) struct OverlayState {
     address_balances: BTreeMap<(sui_types::base_types::SuiAddress, String), u128>,
 }
 
+/// The overlay in a form that serializes to disk (see
+/// [`OverlayStore::export`] / [`OverlayStore::import`]). [`TransactionInfo`] is
+/// not `Serialize`, so its public parts are stored directly.
+#[cfg(feature = "serve")]
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct PersistedOverlay {
+    objects: Vec<Object>,
+    tombstones: Vec<ObjectID>,
+    transactions: Vec<(
+        String,
+        sui_types::transaction::TransactionData,
+        sui_types::effects::TransactionEffects,
+        u64,
+    )>,
+    executed_order: Vec<String>,
+    address_balances: Vec<(sui_types::base_types::SuiAddress, String, u128)>,
+}
+
 /// A writable fork overlay on top of a read-only mainnet data store `S`.
 pub struct OverlayStore<S> {
     /// Backing read store (mainnet), pinned at the fork checkpoint by callers.
@@ -134,6 +152,64 @@ impl<S> OverlayStore<S> {
     #[cfg(feature = "execute")]
     pub(crate) fn snapshot(&self) -> OverlayState {
         self.state.read().expect("overlay state poisoned").clone()
+    }
+
+    /// Export the overlay to a serializable form for persistence to disk. The
+    /// backing (mainnet) store is not exported — it is re-fetched (through the
+    /// cache) on demand, and reads at a pinned checkpoint are immutable.
+    #[cfg(feature = "serve")]
+    pub(crate) fn export(&self) -> PersistedOverlay {
+        let state = self.state.read().expect("overlay state poisoned");
+        PersistedOverlay {
+            objects: state.objects.values().cloned().collect(),
+            tombstones: state.tombstones.iter().copied().collect(),
+            transactions: state
+                .transactions
+                .iter()
+                .map(|(digest, info)| {
+                    (
+                        digest.clone(),
+                        info.data.clone(),
+                        info.effects.clone(),
+                        info.checkpoint,
+                    )
+                })
+                .collect(),
+            executed_order: state.executed_order.clone(),
+            address_balances: state
+                .address_balances
+                .iter()
+                .map(|((owner, ty), amount)| (*owner, ty.clone(), *amount))
+                .collect(),
+        }
+    }
+
+    /// Replace the overlay with a previously [`export`](Self::export)ed one.
+    #[cfg(feature = "serve")]
+    pub(crate) fn import(&self, persisted: PersistedOverlay) {
+        let mut state = self.state.write().expect("overlay state poisoned");
+        state.objects = persisted.objects.into_iter().map(|o| (o.id(), o)).collect();
+        state.tombstones = persisted.tombstones.into_iter().collect();
+        state.transactions = persisted
+            .transactions
+            .into_iter()
+            .map(|(digest, data, effects, checkpoint)| {
+                (
+                    digest,
+                    TransactionInfo {
+                        data,
+                        effects,
+                        checkpoint,
+                    },
+                )
+            })
+            .collect();
+        state.executed_order = persisted.executed_order;
+        state.address_balances = persisted
+            .address_balances
+            .into_iter()
+            .map(|(owner, ty, amount)| ((owner, ty), amount))
+            .collect();
     }
 
     /// Replace the local overlay with a previously captured [`snapshot`], rolling

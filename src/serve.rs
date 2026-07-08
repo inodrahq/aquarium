@@ -53,6 +53,22 @@ use crate::engine::Vm;
 use crate::fork::Fork;
 use crate::gql::Gql;
 
+/// On-disk fork-state format version (bump on any incompatible layout change).
+const PERSIST_FORMAT_VERSION: u32 = 1;
+
+/// The fork's persistable state: overlay + epoch + clock, tagged with the chain
+/// and fork checkpoint so a dump can only be loaded back into a matching fork.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PersistedFork {
+    format_version: u32,
+    chain_id: String,
+    fork_checkpoint: u64,
+    epoch: u64,
+    epoch_start_timestamp_ms: u64,
+    clock_timestamp_ms: u64,
+    overlay: crate::store::PersistedOverlay,
+}
+
 /// A captured fork snapshot: the whole overlay plus the interior-mutable epoch
 /// and clock state that live outside it. Cloneable, so a single snapshot can be
 /// reverted to repeatedly.
@@ -123,6 +139,62 @@ impl ForkState {
         self.vm
             .restore_epoch(snapshot.epoch, snapshot.epoch_start_timestamp_ms);
         *self.clock.lock().unwrap_or_else(|p| p.into_inner()) = snapshot.clock;
+        Ok(())
+    }
+
+    /// Serialize the fork's overlay + epoch + clock to `path`, so a session can
+    /// be reloaded after a restart. The backing network state is not written
+    /// (it is re-fetched through the cache; reads at the pinned checkpoint are
+    /// immutable).
+    pub(crate) fn dump_to(&self, path: &str) -> Result<()> {
+        let persisted = PersistedFork {
+            format_version: PERSIST_FORMAT_VERSION,
+            chain_id: self.chain_id.clone(),
+            fork_checkpoint: self.fork.fork_checkpoint(),
+            epoch: self.vm.epoch(),
+            epoch_start_timestamp_ms: self.vm.epoch_start_timestamp_ms(),
+            clock_timestamp_ms: crate::cheats::clock_timestamp_ms(&self.fork).unwrap_or(0),
+            overlay: self.fork.store().export(),
+        };
+        let bytes = bcs::to_bytes(&persisted).context("serializing fork state")?;
+        std::fs::write(path, bytes).with_context(|| format!("writing fork state to {path}"))?;
+        Ok(())
+    }
+
+    /// Reload a fork state previously written by [`dump_to`](Self::dump_to). The
+    /// dump must be from the same chain and fork checkpoint as this server, or
+    /// the object versions would not line up.
+    pub(crate) fn load_from(&self, path: &str) -> Result<()> {
+        let bytes =
+            std::fs::read(path).with_context(|| format!("reading fork state from {path}"))?;
+        let persisted: PersistedFork =
+            bcs::from_bytes(&bytes).context("deserializing fork state")?;
+        if persisted.format_version != PERSIST_FORMAT_VERSION {
+            anyhow::bail!(
+                "fork state format version {} is unsupported (expected {PERSIST_FORMAT_VERSION})",
+                persisted.format_version
+            );
+        }
+        if persisted.chain_id != self.chain_id {
+            anyhow::bail!(
+                "fork state is for chain {} but this server is forking {}",
+                persisted.chain_id,
+                self.chain_id
+            );
+        }
+        if persisted.fork_checkpoint != self.fork.fork_checkpoint() {
+            anyhow::bail!(
+                "fork state was captured at checkpoint {} but this server forked at {}",
+                persisted.fork_checkpoint,
+                self.fork.fork_checkpoint()
+            );
+        }
+        self.fork.store().import(persisted.overlay);
+        self.vm
+            .restore_epoch(persisted.epoch, persisted.epoch_start_timestamp_ms);
+        crate::cheats::set_clock_timestamp_ms(&self.fork, persisted.clock_timestamp_ms)?;
+        *self.clock.lock().unwrap_or_else(|p| p.into_inner()) =
+            ClockMode::Fixed(persisted.clock_timestamp_ms);
         Ok(())
     }
 

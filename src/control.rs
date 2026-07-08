@@ -20,6 +20,8 @@
 //! - `POST /object/set_contents`  — `{ "object_id", "contents_base64", "bump_version"? }`
 //! - `POST /snapshot`             — capture fork state, returns `{ "id": N }`
 //! - `POST /revert`               — `{ "id": N }`  roll back to a snapshot
+//! - `POST /state/dump`           — `{ "path": "…" }`  write fork state to disk
+//! - `POST /state/load`           — `{ "path": "…" }`  reload fork state
 
 use std::sync::Arc;
 
@@ -49,6 +51,8 @@ pub(crate) fn router(state: Arc<ForkState>) -> Router {
         .route("/object/set_contents", post(object_set_contents))
         .route("/snapshot", post(snapshot))
         .route("/revert", post(revert))
+        .route("/state/dump", post(state_dump))
+        .route("/state/load", post(state_load))
         .with_state(state)
 }
 
@@ -314,5 +318,47 @@ async fn revert(
         epoch: state.epoch(),
         clock_timestamp_ms,
         executed_transactions: state.fork.store().executed_count() as u64,
+    }))
+}
+
+#[derive(Deserialize)]
+struct StatePath {
+    path: String,
+}
+
+#[derive(Serialize)]
+struct StateResult {
+    path: String,
+    executed_transactions: u64,
+    epoch: u64,
+}
+
+/// Write the fork's overlay + epoch + clock to a file on disk.
+async fn state_dump(
+    State(state): State<Arc<ForkState>>,
+    Json(req): Json<StatePath>,
+) -> Result<Json<StateResult>, ApiError> {
+    let s = state.clone();
+    let path = req.path.clone();
+    blocking(move || s.dump_to(&path)).await?;
+    Ok(Json(StateResult {
+        path: req.path,
+        executed_transactions: state.fork.store().executed_count() as u64,
+        epoch: state.epoch(),
+    }))
+}
+
+/// Reload a previously dumped fork state from disk (same chain + checkpoint).
+async fn state_load(
+    State(state): State<Arc<ForkState>>,
+    Json(req): Json<StatePath>,
+) -> Result<Json<StateResult>, ApiError> {
+    let s = state.clone();
+    let path = req.path.clone();
+    blocking(move || s.load_from(&path)).await?;
+    Ok(Json(StateResult {
+        path: req.path,
+        executed_transactions: state.fork.store().executed_count() as u64,
+        epoch: state.epoch(),
     }))
 }
