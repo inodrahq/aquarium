@@ -158,6 +158,86 @@ pub fn set_object_contents<S: ObjectStore>(
     Ok(version)
 }
 
+type SystemStateField = sui_types::dynamic_field::Field<
+    u64,
+    sui_types::sui_system_state::sui_system_state_inner_v2::SuiSystemStateInnerV2,
+>;
+
+/// Resolve and decode the on-chain `SuiSystemState` (`0x5`) inner state as the
+/// fork currently sees it, returning `(inner field object id, decoded field)`.
+///
+/// Only the current (V2) system-state layout is supported; anything else is an
+/// error. The inner state lives as a dynamic field of `0x5` keyed by the
+/// wrapper's `version`.
+fn load_system_state_inner<S: ObjectStore>(fork: &Fork<S>) -> Result<(ObjectID, SystemStateField)> {
+    use sui_types::SUI_SYSTEM_STATE_OBJECT_ID;
+    use sui_types::TypeTag;
+    use sui_types::dynamic_field::derive_dynamic_field_id;
+    use sui_types::sui_system_state::SuiSystemStateWrapper;
+
+    let wrapper_obj = fork
+        .object(SUI_SYSTEM_STATE_OBJECT_ID)?
+        .context("system state object 0x5 not found on the fork")?;
+    let wrapper: SuiSystemStateWrapper = bcs::from_bytes(
+        wrapper_obj
+            .data
+            .try_as_move()
+            .context("0x5 is not a Move object")?
+            .contents(),
+    )
+    .context("decoding SuiSystemStateWrapper")?;
+
+    let key_bytes = bcs::to_bytes(&wrapper.version)?;
+    let child_id = derive_dynamic_field_id(SUI_SYSTEM_STATE_OBJECT_ID, &TypeTag::U64, &key_bytes)
+        .context("deriving system-state inner field id")?;
+    let child_obj = fork
+        .object(child_id)?
+        .with_context(|| format!("system-state inner field {child_id} not found"))?;
+    let field: SystemStateField = bcs::from_bytes(
+        child_obj
+            .data
+            .try_as_move()
+            .context("system-state inner field is not a Move object")?
+            .contents(),
+    )
+    .context("decoding SuiSystemStateInnerV2 (unsupported system-state version?)")?;
+    Ok((child_id, field))
+}
+
+/// The `epoch` recorded in the on-chain `SuiSystemState` (`0x5`) as the fork
+/// sees it (`None` if the layout is unsupported / unreadable).
+pub fn system_state_epoch<S: ObjectStore>(fork: &Fork<S>) -> Option<u64> {
+    load_system_state_inner(fork)
+        .ok()
+        .map(|(_, f)| f.value.epoch)
+}
+
+/// Update the on-chain `SuiSystemState` (`0x5`) so its inner `epoch` and
+/// `epoch_start_timestamp_ms` agree with a shallow epoch advance, for protocols
+/// that read the system state's epoch rather than `TxContext`.
+///
+/// Best-effort and deliberately minimal: only the current (V2) system-state
+/// layout is handled (anything else bails, and the VM's `TxContext` epoch has
+/// still advanced), and it does **not** settle staking rewards, grow validator
+/// exchange rates, or rotate the validator set — it only moves the epoch counter
+/// and start timestamp forward so `sui_system::epoch()` matches.
+pub fn sync_system_state_epoch<S: ObjectStore>(
+    fork: &Fork<S>,
+    epoch: u64,
+    epoch_start_timestamp_ms: u64,
+) -> Result<()> {
+    let (child_id, mut field) = load_system_state_inner(fork)?;
+    field.value.epoch = epoch;
+    field.value.epoch_start_timestamp_ms = epoch_start_timestamp_ms;
+    let bytes = bcs::to_bytes(&field).context("re-encoding system-state inner")?;
+
+    // Write the inner field back (preserves its `ObjectOwner(0x5)` + bumps
+    // version); the UID prefix guard passes since a `Field`'s first bytes are
+    // its own id.
+    set_object_contents(fork, child_id, bytes, true)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -86,6 +86,8 @@ fn clock_label(mode: &ClockMode) -> &'static str {
 struct Status {
     fork_checkpoint: u64,
     epoch: u64,
+    /// Epoch recorded in the on-chain SuiSystemState (0x5); should match `epoch`.
+    system_state_epoch: Option<u64>,
     epoch_start_timestamp_ms: u64,
     clock_timestamp_ms: u64,
     clock_mode: String,
@@ -96,10 +98,17 @@ async fn status(State(state): State<Arc<ForkState>>) -> Result<Json<Status>, Api
     let clock_mode =
         clock_label(&state.clock.lock().unwrap_or_else(|p| p.into_inner())).to_string();
     let s = state.clone();
-    let clock_timestamp_ms = blocking(move || crate::cheats::clock_timestamp_ms(&s.fork)).await?;
+    let (clock_timestamp_ms, system_state_epoch) = blocking(move || {
+        Ok((
+            crate::cheats::clock_timestamp_ms(&s.fork)?,
+            crate::cheats::system_state_epoch(&s.fork),
+        ))
+    })
+    .await?;
     Ok(Json(Status {
         fork_checkpoint: state.fork.fork_checkpoint(),
         epoch: state.epoch(),
+        system_state_epoch,
         epoch_start_timestamp_ms: state.vm.epoch_start_timestamp_ms(),
         clock_timestamp_ms,
         clock_mode,
@@ -206,6 +215,13 @@ async fn epoch_advance(
         // Move time forward to the new epoch boundary too, so time- and
         // epoch-gated logic stay consistent.
         crate::cheats::set_clock_timestamp_ms(&s.fork, new_ts)?;
+        // Best-effort: also move the on-chain SuiSystemState (0x5) epoch forward
+        // so protocols that read it (not just TxContext) stay consistent. A
+        // failure here (e.g. an unsupported system-state layout) is non-fatal —
+        // the VM epoch has already advanced.
+        if let Err(e) = crate::cheats::sync_system_state_epoch(&s.fork, epoch, new_ts) {
+            tracing::warn!("SuiSystemState (0x5) epoch sync skipped: {e}");
+        }
         Ok((epoch, new_ts))
     })
     .await?;
@@ -218,8 +234,9 @@ async fn epoch_advance(
         epoch,
         epoch_start_timestamp_ms: new_ts,
         clock_timestamp_ms: new_ts,
-        note: "shallow advance: TxContext epoch/timestamp move forward; SuiSystemState (0x5) and \
-               staking rewards are not settled"
+        note: "shallow advance: TxContext epoch/timestamp and the SuiSystemState (0x5) epoch move \
+               forward; staking rewards, validator-set rotation and exchange-rate growth are not \
+               settled"
             .to_string(),
     }))
 }
