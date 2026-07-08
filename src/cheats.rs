@@ -407,4 +407,24 @@ mod tests {
         c.extend(0u64.to_le_bytes());
         assert!(set_object_contents(&fork, id, c, true).is_err());
     }
+
+    #[test]
+    fn fund_mints_a_coin_owned_by_the_address_with_the_right_balance() {
+        let fork = Fork::with_store(Empty, 100);
+        let addr = SuiAddress::ZERO;
+        let sui = sui_types::parse_sui_type_tag("0x2::sui::SUI").unwrap();
+
+        let id = fund(&fork, addr, 777, sui).unwrap();
+        let obj = fork.object(id).unwrap().expect("funded coin exists");
+
+        assert!(
+            matches!(obj.owner(), Owner::AddressOwner(a) if *a == addr),
+            "owned by the funded address"
+        );
+        let (ty, value) = sui_types::coin::Coin::extract_balance_if_coin(&obj)
+            .unwrap()
+            .expect("is a coin");
+        assert_eq!(value, 777);
+        assert_eq!(ty, sui_types::parse_sui_type_tag("0x2::sui::SUI").unwrap());
+    }
 }

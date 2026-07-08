@@ -767,6 +767,23 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "execute")]
+    #[test]
+    fn clear_empties_the_overlay() {
+        let overlay = OverlayStore::new(MockMainnet::default(), 100);
+        overlay.apply_written(object(ObjectID::random(), 1));
+        overlay.apply_written(object(ObjectID::random(), 2));
+        overlay.tombstone(ObjectID::random());
+        assert_eq!(overlay.overlay_len(), 2);
+
+        overlay.clear();
+        assert_eq!(overlay.overlay_len(), 0);
+        assert!(
+            overlay.overlay_touched_ids().is_empty(),
+            "tombstones cleared too"
+        );
+    }
+
     #[cfg(feature = "serve")]
     #[test]
     fn export_import_round_trips_objects_and_tombstones() {
