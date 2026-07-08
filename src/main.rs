@@ -9,12 +9,31 @@ use sui_types::base_types::ObjectID;
 
 use aquarium::fork::MainnetFork;
 use aquarium::gql::Gql;
+use sui_data_store::node::Node;
 
 #[derive(Parser)]
-#[command(name = "aquarium", version, about = "Fork Sui mainnet locally.")]
+#[command(name = "aquarium", version, about = "Fork a live Sui network locally.")]
 struct Cli {
+    /// Network to fork: `mainnet`, `testnet`, `devnet`, or a custom GraphQL URL.
+    #[arg(long, global = true, default_value = "mainnet")]
+    network: String,
     #[command(subcommand)]
     command: Command,
+}
+
+/// Resolve a `--network` string to a data-store [`Node`].
+fn resolve_node(network: &str) -> Result<Node> {
+    Ok(match network {
+        "mainnet" => Node::Mainnet,
+        "testnet" => Node::Testnet,
+        "devnet" => Node::Custom("https://graphql.devnet.sui.io/graphql".to_string()),
+        url if url.starts_with("http://") || url.starts_with("https://") => {
+            Node::Custom(url.to_string())
+        }
+        other => anyhow::bail!(
+            "unknown network '{other}' (use mainnet, testnet, devnet, or a GraphQL URL)"
+        ),
+    })
 }
 
 #[derive(Subcommand)]
@@ -88,7 +107,11 @@ fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let gql = Gql::mainnet()?;
+    let node = resolve_node(&cli.network)?;
+    // Echo the network exactly as the user named it (`mainnet` / `testnet` /
+    // `devnet` / URL) rather than the resolved endpoint.
+    let network_name = cli.network.clone();
+    let gql = Gql::new(node.gql_url())?;
 
     match cli.command {
         Command::Info { checkpoint } => {
@@ -98,7 +121,7 @@ fn main() -> Result<()> {
             let cp = checkpoint.unwrap_or(latest);
             let chain = gql.chain_identifier()?;
             let epoch = gql.checkpoint_epoch(cp)?;
-            println!("network          mainnet");
+            println!("network          {network_name}");
             println!("chain identifier {chain}");
             println!("latest checkpoint {latest}");
             println!("fork checkpoint  {cp}");
@@ -108,7 +131,7 @@ fn main() -> Result<()> {
             let object_id = ObjectID::from_hex_literal(&id)
                 .with_context(|| format!("parsing object id {id}"))?;
             let cp = resolve_checkpoint(&gql, checkpoint)?;
-            let fork = MainnetFork::mainnet(cp)?;
+            let fork = MainnetFork::for_node(node, cp)?;
             match fork.object(object_id)? {
                 None => {
                     println!("object {object_id} not found at checkpoint {cp}");
@@ -134,7 +157,7 @@ fn main() -> Result<()> {
             checkpoint,
             repeat,
         } => {
-            demo(&gql, &sender, &coin, checkpoint, repeat)?;
+            demo(&gql, node, &sender, &coin, checkpoint, repeat)?;
         }
         #[cfg(feature = "serve")]
         Command::Serve {
@@ -147,9 +170,12 @@ fn main() -> Result<()> {
             let chain_id = gql.chain_identifier()?;
             let epoch = gql.checkpoint_epoch(cp)?;
             let fork_digest = gql.checkpoint_digest(cp)?;
-            let fork = MainnetFork::mainnet(cp)?;
-            let vm = fork.vm()?;
-            println!("aquarium gRPC fork of mainnet");
+            let network_gql_url = node.gql_url().to_string();
+            let fork = MainnetFork::for_node(node, cp)?;
+            // Use the epoch we already resolved (network-correct via the store),
+            // rather than the mainnet-only `vm()` convenience.
+            let vm = fork.vm_for_epoch(epoch)?;
+            println!("aquarium gRPC fork of {network_name}");
             println!("  chain id         {chain_id}");
             println!("  fork checkpoint  {cp}  (epoch {epoch})");
             println!("  reference gas    {} MIST", vm.reference_gas_price());
@@ -161,14 +187,30 @@ fn main() -> Result<()> {
             );
             println!("  curl 127.0.0.1:{control_port}/status");
             println!("  curl -XPOST 127.0.0.1:{control_port}/epoch/advance -d '{{\"count\":1}}'");
-            aquarium::serve::run(fork, vm, chain_id, fork_digest, port, control_port)?;
+            aquarium::serve::run(
+                fork,
+                vm,
+                chain_id,
+                network_name,
+                network_gql_url,
+                fork_digest,
+                port,
+                control_port,
+            )?;
         }
     }
     Ok(())
 }
 
 #[cfg(feature = "execute")]
-fn demo(gql: &Gql, sender: &str, coin: &str, checkpoint: Option<u64>, repeat: u32) -> Result<()> {
+fn demo(
+    gql: &Gql,
+    node: Node,
+    sender: &str,
+    coin: &str,
+    checkpoint: Option<u64>,
+    repeat: u32,
+) -> Result<()> {
     use std::str::FromStr;
     use sui_types::base_types::SuiAddress;
     use sui_types::gas_coin::GasCoin;
@@ -184,10 +226,10 @@ fn demo(gql: &Gql, sender: &str, coin: &str, checkpoint: Option<u64>, repeat: u3
     let coin_id = ObjectID::from_hex_literal(coin).context("parsing coin id")?;
     let repeat = repeat.max(1);
     let cp = resolve_checkpoint(gql, checkpoint)?;
+    let epoch = gql.checkpoint_epoch(cp)?;
 
-    let fork = MainnetFork::mainnet(cp)?;
-    let vm = fork.vm()?;
-    let epoch = vm.epoch();
+    let fork = MainnetFork::for_node(node, cp)?;
+    let vm = fork.vm_for_epoch(epoch)?;
     let price = vm.reference_gas_price();
 
     let coin_obj = fork

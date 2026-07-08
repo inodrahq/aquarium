@@ -69,7 +69,12 @@ pub(crate) struct ForkState {
     pub(crate) fork: Fork<DataStore>,
     pub(crate) vm: Vm,
     pub(crate) chain_id: String,
-    /// Base58 digest of the mainnet checkpoint this fork branched from.
+    /// Human network name the fork is of (`mainnet` / `testnet` / a URL).
+    pub(crate) chain_name: String,
+    /// GraphQL endpoint for the forked network, used for the mainnet-side
+    /// fallback reads (owned coins, coin metadata, balances, dynamic fields).
+    pub(crate) network_gql_url: String,
+    /// Base58 digest of the checkpoint this fork branched from.
     pub(crate) fork_checkpoint_digest: String,
     /// How the fork drives the on-chain `Clock` (`0x6`); see [`ClockMode`].
     pub(crate) clock: std::sync::Mutex<ClockMode>,
@@ -144,10 +149,13 @@ struct AquariumRpc(Arc<ForkState>);
 
 /// Run the gRPC server on `127.0.0.1:port` (and the JSON cheat-control API on
 /// `127.0.0.1:control_port`) until interrupted. Blocking.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     fork: Fork<DataStore>,
     vm: Vm,
     chain_id: String,
+    chain_name: String,
+    network_gql_url: String,
     fork_checkpoint_digest: String,
     port: u16,
     control_port: u16,
@@ -159,6 +167,8 @@ pub fn run(
         fork,
         vm,
         chain_id,
+        chain_name,
+        network_gql_url,
         fork_checkpoint_digest,
         clock: std::sync::Mutex::new(ClockMode::Auto {
             anchor_ms,
@@ -387,7 +397,7 @@ impl LedgerService for AquariumRpc {
         let state = &self.0;
         let mut message = proto::GetServiceInfoResponse::default();
         message.chain_id = Some(state.chain_id.clone());
-        message.chain = Some("mainnet".to_string());
+        message.chain = Some(state.chain_name.clone());
         message.epoch = Some(state.epoch());
         message.checkpoint_height = Some(state.fork.fork_checkpoint());
         message.server = Some(concat!("aquarium/", env!("CARGO_PKG_VERSION")).to_string());
@@ -580,7 +590,7 @@ fn compute_balance(
 
     // Mainnet-side coins (skipping any id the overlay already accounts for).
     let touched = store.overlay_touched_ids();
-    let gql = Gql::mainnet()?;
+    let gql = Gql::new(&state.network_gql_url)?;
     for (id, value) in gql.owned_coin_values(&owner.to_string(), &canonical)? {
         let id = ObjectID::from_hex_literal(&id).map_err(|e| anyhow!("bad coin id: {e}"))?;
         if !touched.contains(&id) {
@@ -659,10 +669,10 @@ impl StateService for AquariumRpc {
             for (ty, _) in store.address_balances_of(owner) {
                 types.insert(ty);
             }
-            if let Ok(gql) = Gql::mainnet()
-                && let Ok(mainnet) = gql.address_balances(&owner.to_string())
+            if let Ok(gql) = Gql::new(&state.network_gql_url)
+                && let Ok(network) = gql.address_balances(&owner.to_string())
             {
-                for (ty, _) in mainnet {
+                for (ty, _) in network {
                     types.insert(ty);
                 }
             }
@@ -815,7 +825,7 @@ fn coin_info(
 
     // Fall back to live mainnet for anything the overlay didn't supply.
     if response.metadata.is_none() || response.treasury.is_none() {
-        let gql = Gql::mainnet()?;
+        let gql = Gql::new(&state.network_gql_url)?;
         if let Some(meta) = gql.coin_metadata(canonical)? {
             if response.metadata.is_none() {
                 let mut m = proto::CoinMetadata::default();
@@ -873,7 +883,7 @@ fn dynamic_fields(
     }
 
     // Live mainnet fields (best-effort; derive the field id from the name).
-    let gql = Gql::mainnet()?;
+    let gql = Gql::new(&state.network_gql_url)?;
     for f in gql.dynamic_fields(&parent.to_string(), limit)? {
         let mut df = proto::DynamicField::default();
         df.kind = Some(if f.is_object {

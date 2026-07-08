@@ -16,7 +16,7 @@ use sui_types::object::Object;
 
 use crate::store::OverlayStore;
 
-/// A fork of mainnet (GraphQL-backed) pinned at a checkpoint.
+/// A GraphQL-backed fork of a live Sui network, pinned at a checkpoint.
 pub type MainnetFork = Fork<DataStore>;
 
 /// A local fork over a backing read store `S`, pinned at `fork_checkpoint`.
@@ -34,8 +34,14 @@ impl Fork<DataStore> {
     /// Create a fork of mainnet at `fork_checkpoint`, reading through Mysten's
     /// public GraphQL endpoint.
     pub fn mainnet(fork_checkpoint: u64) -> Result<Self> {
-        let data_store = DataStore::new(Node::Mainnet, env!("CARGO_PKG_VERSION"))
-            .context("constructing mainnet GraphQL data store")?;
+        Self::for_node(Node::Mainnet, fork_checkpoint)
+    }
+
+    /// Create a fork of an arbitrary network (mainnet, testnet, or a custom
+    /// GraphQL endpoint) at `fork_checkpoint`.
+    pub fn for_node(node: Node, fork_checkpoint: u64) -> Result<Self> {
+        let data_store = DataStore::new(node, env!("CARGO_PKG_VERSION"))
+            .context("constructing GraphQL data store")?;
         Ok(Self::with_store(data_store, fork_checkpoint))
     }
 }
