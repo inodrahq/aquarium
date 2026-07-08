@@ -1222,3 +1222,87 @@ pub(crate) fn b64_decode(s: &str) -> Result<Vec<u8>> {
         .decode(s.trim())
         .context("invalid base64")
 }
+
+/// Dry-run `tx_b64` (base64 `TransactionData` BCS) with tracing and return a
+/// JSON report: per-command summary, gas cost, status, object changes, and —
+/// when `full` — the complete Move execution trace (zstd-compressed JSON,
+/// base64). The overlay is not mutated.
+pub(crate) fn trace_transaction(
+    state: &ForkState,
+    tx_b64: &str,
+    full: bool,
+) -> Result<serde_json::Value> {
+    use sui_types::effects::TransactionEffectsAPI;
+    use sui_types::transaction::{Command, TransactionDataAPI, TransactionKind};
+
+    let bytes = b64_decode(tx_b64)?;
+    let tx_data: sui_types::transaction::TransactionData =
+        bcs::from_bytes(&bytes).context("decoding TransactionData BCS")?;
+    let outcome = state.fork.simulate_traced(&state.vm, tx_data)?;
+
+    let commands: Vec<String> = match outcome.tx_data.kind() {
+        TransactionKind::ProgrammableTransaction(pt) => pt
+            .commands
+            .iter()
+            .map(|c| match c {
+                Command::MoveCall(mc) => {
+                    let targs = if mc.type_arguments.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" <{} type args>", mc.type_arguments.len())
+                    };
+                    format!(
+                        "MoveCall {}::{}::{}{targs}",
+                        mc.package, mc.module, mc.function
+                    )
+                }
+                Command::TransferObjects(..) => "TransferObjects".to_string(),
+                Command::SplitCoins(..) => "SplitCoins".to_string(),
+                Command::MergeCoins(..) => "MergeCoins".to_string(),
+                Command::Publish(..) => "Publish".to_string(),
+                Command::MakeMoveVec(..) => "MakeMoveVec".to_string(),
+                Command::Upgrade(..) => "Upgrade".to_string(),
+            })
+            .collect(),
+        _ => vec!["(system / non-programmable transaction)".to_string()],
+    };
+
+    let effects = &outcome.effects;
+    let gas = effects.gas_cost_summary();
+    let ids = |refs: Vec<(sui_types::base_types::ObjectRef, Owner)>| {
+        refs.iter()
+            .map(|(r, _)| r.0.to_hex_literal())
+            .collect::<Vec<_>>()
+    };
+    let (success, error) = match &outcome.status {
+        Ok(()) => (true, None),
+        Err(e) => (false, Some(e.to_string())),
+    };
+
+    let mut report = serde_json::json!({
+        "digest": outcome.digest.to_string(),
+        "success": success,
+        "error": error,
+        "gas": {
+            "computation_cost": gas.computation_cost,
+            "storage_cost": gas.storage_cost,
+            "storage_rebate": gas.storage_rebate,
+            "non_refundable_storage_fee": gas.non_refundable_storage_fee,
+            "net_cost": gas.computation_cost as i128 + gas.storage_cost as i128
+                - gas.storage_rebate as i128,
+        },
+        "commands": commands,
+        "object_changes": {
+            "created": ids(effects.created()),
+            "mutated": ids(effects.mutated()),
+            "deleted": effects.deleted().iter().map(|r| r.0.to_hex_literal()).collect::<Vec<_>>(),
+        },
+    });
+    if full && let Some(zst) = &outcome.trace_gz {
+        report["move_trace_zst_b64"] =
+            serde_json::Value::String(base64::engine::general_purpose::STANDARD.encode(zst));
+        report["move_trace_note"] =
+            serde_json::Value::String("zstd-compressed JSON, Move trace format".to_string());
+    }
+    Ok(report)
+}

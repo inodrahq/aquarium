@@ -160,6 +160,16 @@ where
         vm.execute(&self.store, self.fork_checkpoint, tx_data)
     }
 
+    /// Dry-run a transaction and capture its full Move execution trace (in
+    /// [`ExecutionOutcome::trace_gz`]). The overlay is left unchanged.
+    pub fn simulate_traced(
+        &self,
+        vm: &crate::engine::Vm,
+        tx_data: sui_types::transaction::TransactionData,
+    ) -> Result<crate::engine::ExecutionOutcome> {
+        vm.execute_traced(&self.store, self.fork_checkpoint, tx_data)
+    }
+
     /// Execute a transaction against the fork and commit its effects to the
     /// overlay; mainnet is untouched.
     ///

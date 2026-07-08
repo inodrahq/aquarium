@@ -22,6 +22,7 @@
 //! - `POST /revert`               — `{ "id": N }`  roll back to a snapshot
 //! - `POST /state/dump`           — `{ "path": "…" }`  write fork state to disk
 //! - `POST /state/load`           — `{ "path": "…" }`  reload fork state
+//! - `POST /trace`                — `{ "transaction": "<b64>", "full"? }`  dry-run + trace
 
 use std::sync::Arc;
 
@@ -53,6 +54,7 @@ pub(crate) fn router(state: Arc<ForkState>) -> Router {
         .route("/revert", post(revert))
         .route("/state/dump", post(state_dump))
         .route("/state/load", post(state_load))
+        .route("/trace", post(trace))
         .with_state(state)
 }
 
@@ -361,4 +363,25 @@ async fn state_load(
         executed_transactions: state.fork.store().executed_count() as u64,
         epoch: state.epoch(),
     }))
+}
+
+#[derive(Deserialize)]
+struct TraceReq {
+    /// Base64 `TransactionData` BCS (the bytes `tx.build()` produces).
+    transaction: String,
+    /// Include the full compressed Move opcode trace (large). Default false.
+    full: Option<bool>,
+}
+
+/// Dry-run a transaction and return an execution trace (command summary, gas,
+/// status, object changes; optionally the full Move trace).
+async fn trace(
+    State(state): State<Arc<ForkState>>,
+    Json(req): Json<TraceReq>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let s = state.clone();
+    let full = req.full.unwrap_or(false);
+    let tx = req.transaction;
+    let report = blocking(move || crate::serve::trace_transaction(&s, &tx, full)).await?;
+    Ok(Json(report))
 }

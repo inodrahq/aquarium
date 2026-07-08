@@ -29,6 +29,8 @@ sui-data-store = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.
 sui-types = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.74.1" }
 # Execution layer (heavy tree) — enabled once the read layer is validated.
 sui-execution = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.74.1", optional = true }
+# Move VM execution trace format (for surfacing per-transaction traces).
+move-trace-format = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.74.1", optional = true }
 prometheus = { version = "0.14", optional = true }
 
 # --- gRPC façade (`serve` feature) ---
@@ -62,7 +64,7 @@ move-core-types = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1
 # On by default so released/installed binaries can run transactions; build with
 # `--no-default-features` for a lightweight read-only binary (no Sui VM tree).
 default = ["execute", "serve"]
-execute = ["dep:sui-execution", "dep:prometheus"]
+execute = ["dep:sui-execution", "dep:move-trace-format", "dep:prometheus"]
 # `serve` exposes the fork over a local sui.rpc.v2 gRPC endpoint (`aquarium
 # serve`) so standard tooling (grpcurl, SDKs) can talk to the fork like a node.
 serve = [

@@ -53,6 +53,9 @@ pub struct ExecutionOutcome {
     pub written: Vec<Object>,
     /// Object ids removed (deleted/wrapped) — to be tombstoned.
     pub deleted: Vec<ObjectID>,
+    /// The full Move execution trace as zstd-compressed JSON, if tracing was
+    /// requested for this run (see [`Vm::execute_traced`]).
+    pub trace_gz: Option<Vec<u8>>,
 }
 
 /// The fork VM, pinned to one protocol version / epoch.
@@ -153,6 +156,27 @@ impl Vm {
         fork_checkpoint: u64,
         tx_data: TransactionData,
     ) -> Result<ExecutionOutcome> {
+        self.run(store, fork_checkpoint, tx_data, false)
+    }
+
+    /// Like [`execute`](Self::execute), but also captures the full Move
+    /// execution trace into [`ExecutionOutcome::trace_gz`] (compressed JSON).
+    pub fn execute_traced<S: DataObjectStore>(
+        &self,
+        store: &S,
+        fork_checkpoint: u64,
+        tx_data: TransactionData,
+    ) -> Result<ExecutionOutcome> {
+        self.run(store, fork_checkpoint, tx_data, true)
+    }
+
+    fn run<S: DataObjectStore>(
+        &self,
+        store: &S,
+        fork_checkpoint: u64,
+        tx_data: TransactionData,
+        capture_trace: bool,
+    ) -> Result<ExecutionOutcome> {
         let digest = tx_data.digest();
         let input_objects = resolve_input_objects(store, fork_checkpoint, &tx_data)?;
         let checked = CheckedInputObjects::new_for_replay(input_objects);
@@ -194,7 +218,7 @@ impl Vm {
         let epoch_start_timestamp_ms = self.epoch_start_timestamp_ms();
 
         let runtime_store = RuntimeStore::new(store, fork_checkpoint);
-        let mut trace = None;
+        let mut trace = capture_trace.then(move_trace_format::format::MoveTraceBuilder::new);
         let (inner_store, gas_status, effects, _timing, status) = self
             .executor
             .execute_transaction_to_effects_and_execution_error(
@@ -221,6 +245,10 @@ impl Vm {
         deleted.extend(effects.wrapped().into_iter().map(|r| r.0));
         deleted.extend(effects.unwrapped_then_deleted().into_iter().map(|r| r.0));
 
+        // Convert the trace to compressed JSON immediately (the builder holds a
+        // background thread that `into_compressed_json_bytes` joins).
+        let trace_gz = trace.map(|b| b.into_trace().into_compressed_json_bytes());
+
         Ok(ExecutionOutcome {
             digest,
             tx_data,
@@ -229,6 +257,7 @@ impl Vm {
             gas_status,
             written,
             deleted,
+            trace_gz,
         })
     }
 }
