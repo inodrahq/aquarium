@@ -53,6 +53,17 @@ use crate::engine::Vm;
 use crate::fork::Fork;
 use crate::gql::Gql;
 
+/// A captured fork snapshot: the whole overlay plus the interior-mutable epoch
+/// and clock state that live outside it. Cloneable, so a single snapshot can be
+/// reverted to repeatedly.
+#[derive(Clone)]
+pub(crate) struct ForkSnapshot {
+    overlay: crate::store::OverlayState,
+    epoch: u64,
+    epoch_start_timestamp_ms: u64,
+    clock: ClockMode,
+}
+
 /// Everything a handler needs, shared across services and the control API.
 pub(crate) struct ForkState {
     pub(crate) fork: Fork<DataStore>,
@@ -62,12 +73,52 @@ pub(crate) struct ForkState {
     pub(crate) fork_checkpoint_digest: String,
     /// How the fork drives the on-chain `Clock` (`0x6`); see [`ClockMode`].
     pub(crate) clock: std::sync::Mutex<ClockMode>,
+    /// Captured snapshots by id (see [`ForkState::take_snapshot`]).
+    snapshots: std::sync::Mutex<std::collections::HashMap<u64, ForkSnapshot>>,
+    /// Next snapshot id to hand out.
+    next_snapshot: std::sync::atomic::AtomicU64,
 }
 
 impl ForkState {
     /// The fork's current epoch (may have been shallow-advanced via a cheat).
     pub(crate) fn epoch(&self) -> u64 {
         self.vm.epoch()
+    }
+
+    /// Capture the current fork state (overlay + epoch + clock) and return its
+    /// snapshot id. The snapshot is independent of later mutations.
+    pub(crate) fn take_snapshot(&self) -> u64 {
+        let snapshot = ForkSnapshot {
+            overlay: self.fork.store().snapshot(),
+            epoch: self.vm.epoch(),
+            epoch_start_timestamp_ms: self.vm.epoch_start_timestamp_ms(),
+            clock: self.clock.lock().unwrap_or_else(|p| p.into_inner()).clone(),
+        };
+        let id = self
+            .next_snapshot
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.snapshots
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(id, snapshot);
+        id
+    }
+
+    /// Roll the fork back to a captured snapshot. The snapshot is retained, so
+    /// the same id can be reverted to again. Errors if the id is unknown.
+    pub(crate) fn revert(&self, id: u64) -> Result<()> {
+        let snapshot = self
+            .snapshots
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| anyhow!("no such snapshot {id}"))?;
+        self.fork.store().restore(snapshot.overlay);
+        self.vm
+            .restore_epoch(snapshot.epoch, snapshot.epoch_start_timestamp_ms);
+        *self.clock.lock().unwrap_or_else(|p| p.into_inner()) = snapshot.clock;
+        Ok(())
     }
 
     /// Stamp the clock for the next transaction, per the active [`ClockMode`].
@@ -113,6 +164,8 @@ pub fn run(
             anchor_ms,
             anchor_at: std::time::Instant::now(),
         }),
+        snapshots: std::sync::Mutex::new(std::collections::HashMap::new()),
+        next_snapshot: std::sync::atomic::AtomicU64::new(0),
     });
     let state = AquariumRpc(shared.clone());
 

@@ -35,6 +35,7 @@ use sui_types::object::Object;
 use crate::fork::Fork;
 
 /// How the fork drives the on-chain `Clock` (`0x6`).
+#[derive(Clone)]
 pub enum ClockMode {
     /// Track real wall-clock drift from an anchor: the clock the fork presents
     /// is `anchor_ms + time since anchor_at`. This is the default, so a freshly

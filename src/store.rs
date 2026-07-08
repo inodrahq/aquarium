@@ -30,8 +30,12 @@ use sui_types::object::Object;
 use sui_types::supported_protocol_versions::ProtocolConfig;
 
 /// Local fork state, guarded as a unit so commits are atomic.
-#[derive(Default)]
-struct OverlayState {
+///
+/// `Clone` is what makes fork snapshots cheap: capturing a snapshot is a clone
+/// of this whole struct, and reverting swaps a clone back in (see
+/// [`OverlayStore::snapshot`] / [`OverlayStore::restore`]).
+#[derive(Clone, Default)]
+pub(crate) struct OverlayState {
     /// Objects created or mutated by locally executed transactions, keyed by id
     /// and holding the *latest* local version.
     objects: BTreeMap<ObjectID, Object>,
@@ -121,6 +125,25 @@ impl<S> OverlayStore<S> {
         if state.transactions.insert(digest.clone(), info).is_none() {
             state.executed_order.push(digest);
         }
+    }
+
+    /// Capture the entire local overlay as an independent snapshot (a deep
+    /// clone). Later mutations do not affect it, so it can be handed to
+    /// [`OverlayStore::restore`] any number of times to roll back to this point
+    /// (the anvil `evm_snapshot` analog).
+    #[cfg(feature = "execute")]
+    pub(crate) fn snapshot(&self) -> OverlayState {
+        self.state.read().expect("overlay state poisoned").clone()
+    }
+
+    /// Replace the local overlay with a previously captured [`snapshot`], rolling
+    /// back every object write, deletion, transaction record and address balance
+    /// to that point (`evm_revert`). The backing mainnet store is unaffected.
+    ///
+    /// [`snapshot`]: OverlayStore::snapshot
+    #[cfg(feature = "execute")]
+    pub(crate) fn restore(&self, snapshot: OverlayState) {
+        *self.state.write().expect("overlay state poisoned") = snapshot;
     }
 
     /// Force an object into the overlay directly, outside transaction execution

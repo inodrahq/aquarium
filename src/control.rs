@@ -18,6 +18,8 @@
 //! - `POST /clock/freeze`         — stop auto-advancing the clock
 //! - `POST /epoch/advance`        — `{ "count": N?, "timestamp_ms": N? }`
 //! - `POST /object/set_contents`  — `{ "object_id", "contents_base64", "bump_version"? }`
+//! - `POST /snapshot`             — capture fork state, returns `{ "id": N }`
+//! - `POST /revert`               — `{ "id": N }`  roll back to a snapshot
 
 use std::sync::Arc;
 
@@ -45,6 +47,8 @@ pub(crate) fn router(state: Arc<ForkState>) -> Router {
         .route("/clock/freeze", post(clock_freeze))
         .route("/epoch/advance", post(epoch_advance))
         .route("/object/set_contents", post(object_set_contents))
+        .route("/snapshot", post(snapshot))
+        .route("/revert", post(revert))
         .with_state(state)
 }
 
@@ -246,5 +250,52 @@ async fn object_set_contents(
     Ok(Json(SetObjectResult {
         object_id: id.to_hex_literal(),
         version,
+    }))
+}
+
+#[derive(Serialize)]
+struct SnapshotResult {
+    id: u64,
+}
+
+/// Capture the fork's current state (overlay + epoch + clock) and return its id.
+async fn snapshot(State(state): State<Arc<ForkState>>) -> Result<Json<SnapshotResult>, ApiError> {
+    let s = state.clone();
+    let id = tokio::task::spawn_blocking(move || s.take_snapshot())
+        .await
+        .map_err(ise)?;
+    Ok(Json(SnapshotResult { id }))
+}
+
+#[derive(Deserialize)]
+struct Revert {
+    id: u64,
+}
+
+#[derive(Serialize)]
+struct RevertResult {
+    id: u64,
+    epoch: u64,
+    clock_timestamp_ms: u64,
+    executed_transactions: u64,
+}
+
+/// Roll the fork back to a previously captured snapshot.
+async fn revert(
+    State(state): State<Arc<ForkState>>,
+    Json(req): Json<Revert>,
+) -> Result<Json<RevertResult>, ApiError> {
+    let s = state.clone();
+    let id = req.id;
+    let clock_timestamp_ms = blocking(move || {
+        s.revert(id)?;
+        crate::cheats::clock_timestamp_ms(&s.fork)
+    })
+    .await?;
+    Ok(Json(RevertResult {
+        id: req.id,
+        epoch: state.epoch(),
+        clock_timestamp_ms,
+        executed_transactions: state.fork.store().executed_count() as u64,
     }))
 }

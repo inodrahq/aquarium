@@ -131,6 +131,18 @@ impl Vm {
             + count.max(1)
     }
 
+    /// Restore the epoch and epoch-start timestamp to exact values — used when
+    /// reverting a fork snapshot, so `TxContext` epoch/time roll back with the
+    /// overlay.
+    pub fn restore_epoch(&self, epoch: u64, epoch_start_timestamp_ms: u64) {
+        self.epoch
+            .store(epoch, std::sync::atomic::Ordering::Relaxed);
+        self.epoch_start_timestamp_ms.store(
+            epoch_start_timestamp_ms,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
     /// Execute `tx_data` against `store` (reads pinned at `fork_checkpoint`).
     ///
     /// This does **not** mutate the store; the caller commits
