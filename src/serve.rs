@@ -25,9 +25,9 @@
 
 use std::sync::Arc;
 
+use crate::fork::CachedNetworkStore;
 use anyhow::{Context, Result, anyhow};
 use base64::Engine;
-use sui_data_store::stores::DataStore;
 use sui_rpc::field::FieldMaskTree;
 use sui_rpc::merge::Merge;
 use sui_rpc::proto::sui::rpc::v2 as proto;
@@ -66,7 +66,7 @@ pub(crate) struct ForkSnapshot {
 
 /// Everything a handler needs, shared across services and the control API.
 pub(crate) struct ForkState {
-    pub(crate) fork: Fork<DataStore>,
+    pub(crate) fork: Fork<CachedNetworkStore>,
     pub(crate) vm: Vm,
     pub(crate) chain_id: String,
     /// Human network name the fork is of (`mainnet` / `testnet` / a URL).
@@ -151,7 +151,7 @@ struct AquariumRpc(Arc<ForkState>);
 /// `127.0.0.1:control_port`) until interrupted. Blocking.
 #[allow(clippy::too_many_arguments)]
 pub fn run(
-    fork: Fork<DataStore>,
+    fork: Fork<CachedNetworkStore>,
     vm: Vm,
     chain_id: String,
     chain_name: String,

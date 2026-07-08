@@ -9,15 +9,23 @@
 
 use anyhow::{Context, Result};
 use sui_data_store::node::Node;
-use sui_data_store::stores::DataStore;
+use sui_data_store::stores::{DataStore, LruMemoryStore, ReadThroughStore};
 use sui_data_store::{ObjectKey, ObjectStore, VersionQuery};
 use sui_types::base_types::ObjectID;
 use sui_types::object::Object;
 
 use crate::store::OverlayStore;
 
+/// The network read stack: an in-memory LRU cache in front of the GraphQL data
+/// store. A fork is pinned at a checkpoint, so every read — a specific
+/// `(id, version)` or the "current at checkpoint" object — is **immutable**;
+/// caching it is always correct and turns repeated reads (e.g. a CLMM swap that
+/// walks the same tick dynamic fields across several transactions) into local
+/// lookups instead of GraphQL round-trips.
+pub type CachedNetworkStore = ReadThroughStore<LruMemoryStore, DataStore>;
+
 /// A GraphQL-backed fork of a live Sui network, pinned at a checkpoint.
-pub type MainnetFork = Fork<DataStore>;
+pub type MainnetFork = Fork<CachedNetworkStore>;
 
 /// A local fork over a backing read store `S`, pinned at `fork_checkpoint`.
 pub struct Fork<S> {
@@ -30,19 +38,25 @@ pub struct Fork<S> {
     execution_lock: std::sync::Mutex<()>,
 }
 
-impl Fork<DataStore> {
+impl Fork<CachedNetworkStore> {
     /// Create a fork of mainnet at `fork_checkpoint`, reading through Mysten's
-    /// public GraphQL endpoint.
+    /// public GraphQL endpoint (behind an in-memory cache).
     pub fn mainnet(fork_checkpoint: u64) -> Result<Self> {
         Self::for_node(Node::Mainnet, fork_checkpoint)
     }
 
     /// Create a fork of an arbitrary network (mainnet, testnet, or a custom
-    /// GraphQL endpoint) at `fork_checkpoint`.
+    /// GraphQL endpoint) at `fork_checkpoint`, with a read-through cache.
     pub fn for_node(node: Node, fork_checkpoint: u64) -> Result<Self> {
-        let data_store = DataStore::new(node, env!("CARGO_PKG_VERSION"))
+        let source = DataStore::new(node.clone(), env!("CARGO_PKG_VERSION"))
             .context("constructing GraphQL data store")?;
-        Ok(Self::with_store(data_store, fork_checkpoint))
+        // Generous object capacity: a single DEX/CLMM transaction can touch
+        // thousands of tick dynamic fields, and a session re-reads them often.
+        let cache = LruMemoryStore::with_capacities(node, 8_192, 64, 500_000, 131_072, 131_072);
+        Ok(Self::with_store(
+            ReadThroughStore::new(cache, source),
+            fork_checkpoint,
+        ))
     }
 }
 
@@ -198,7 +212,7 @@ where
 }
 
 #[cfg(feature = "execute")]
-impl Fork<DataStore> {
+impl Fork<CachedNetworkStore> {
     /// Build a [`Vm`](crate::engine::Vm) for this mainnet fork, deriving the
     /// epoch from the fork checkpoint (so the correct protocol config, epoch
     /// timestamp and reference gas price are always used).
