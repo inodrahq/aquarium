@@ -6,7 +6,7 @@
   <a href="https://github.com/inodrahq/aquarium/actions/workflows/ci.yml"><img src="https://github.com/inodrahq/aquarium/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache-2.0"></a>
   <img src="https://img.shields.io/badge/rust-stable-orange.svg" alt="Rust stable">
-  <img src="https://img.shields.io/badge/status-proof%20of%20concept-yellow.svg" alt="Status">
+  <img src="https://img.shields.io/badge/status-alpha-green.svg" alt="Status">
 </p>
 
 <h1 align="center">🐠 Aquarium</h1>
@@ -16,10 +16,18 @@
 ---
 
 Aquarium is to Sui what `anvil --fork-url` is to EVM. It takes **live mainnet
-object state** and lets you execute **new transactions** against it locally —
-no validators, no consensus, no multi-terabyte snapshot. State is fetched
-**lazily on demand** (through Sui's public GraphQL) and cached; transactions you
-run mutate a local **overlay** while the real chain stays untouched.
+(or testnet / devnet) object state** and lets you execute **new transactions**
+against it locally — no validators, no consensus, no multi-terabyte snapshot.
+State is fetched **lazily on demand** (through Sui's public GraphQL) and cached;
+transactions you run mutate a local **overlay** while the real chain stays
+untouched.
+
+`aquarium serve` exposes the fork over the standard **`sui.rpc.v2` gRPC**
+surface, so grpcurl, the SDKs and block explorers talk to it like a node — with
+**anvil-style cheats** alongside it (advance the clock or epoch, fund an
+account, override an object, snapshot/revert, dump/reload, trace a transaction).
+Any account can be impersonated (signatures are not verified), so you act as
+whoever you need to.
 
 ```console
 $ aquarium demo --sender 0x1a66…41dd --coin 0xff21…d916 --repeat 4
@@ -38,6 +46,8 @@ overlay coin (locally produced after 4 tx(s)):
 - [Why a fork?](#why-a-fork)
 - [Install](#install)
 - [Use](#use)
+- [Serve a local node](#serve-a-local-node)
+- [Cheat controls](#cheat-controls)
 - [Verifying it's real](#verifying-its-real)
 - [How it works](#how-it-works)
 - [Aquarium vs. anvil](#aquarium-vs-anvil)
@@ -129,9 +139,82 @@ aquarium demo \
 | `info` | Chain id, latest checkpoint, chosen fork point + its epoch. |
 | `object --id <id>` | Read an object as the fork sees it (overlay first, then mainnet). |
 | `demo` | Execute gas-only transaction(s) and prove fork isolation. |
+| `serve` | Serve the fork over `sui.rpc.v2` gRPC + the cheat control API. |
+
+Every command takes `--network mainnet|testnet|devnet|<graphql-url>` (default
+`mainnet`) and an optional `--checkpoint N` to pin the fork point.
 
 The library API (`Fork`, `Fork::execute` / `simulate`, `OverlayStore`, `engine::Vm`)
 lets you build your own transactions and drive the fork programmatically.
+
+## Serve a local node
+
+```bash
+aquarium serve                       # fork mainnet @ latest, gRPC :9123, cheats :9124
+aquarium serve --network testnet     # fork testnet instead
+aquarium serve --checkpoint 296136961 --port 9123   # pin the fork point
+```
+
+The fork is served over the standard **`sui.rpc.v2`** gRPC surface (with
+reflection, and gRPC-Web + CORS so browsers/explorers can reach it):
+
+| Service | Methods |
+|---|---|
+| `LedgerService` | `GetServiceInfo`, `GetObject`, `BatchGetObjects`, `GetTransaction`, `BatchGetTransactions`, `GetCheckpoint`, `GetEpoch` |
+| `StateService` | `GetBalance`, `ListBalances`, `ListOwnedObjects`, `GetCoinInfo`, `ListDynamicFields` |
+| `MovePackageService` | `GetPackage`, `GetDatatype`, `GetFunction`, `ListPackageVersions` (parsed from on-fork bytecode) |
+| `TransactionExecutionService` | `ExecuteTransaction`, `SimulateTransaction` — **signatures not verified** |
+| `SubscriptionService` | `SubscribeCheckpoints` over the fork's synthetic feed |
+
+```bash
+grpcurl -plaintext 127.0.0.1:9123 sui.rpc.v2.LedgerService.GetServiceInfo
+grpcurl -plaintext -d '{"object_id":"0x6"}' 127.0.0.1:9123 \
+  sui.rpc.v2.LedgerService.GetObject
+```
+
+Point the `@mysten/sui` SDK (or a block explorer) at `127.0.0.1:9123` and it
+behaves like a node — except you can execute as any account and drive state with
+the cheats below.
+
+## Cheat controls
+
+A small JSON/HTTP API on `--control-port` (default gRPC port **+ 1**), kept off
+the `sui.rpc.v2` surface so that stays a faithful node twin. The anvil analogy:
+
+| Endpoint | Body | Effect (anvil equivalent) |
+|---|---|---|
+| `GET /status` | — | clock, epoch, `0x5` epoch, fork point, tx count |
+| `POST /fund` | `{address, amount, coin_type?}` | mint a coin into an account (`anvil_setBalance`) |
+| `POST /clock/set` | `{timestamp_ms}` | pin the `Clock` (`evm_setTime`) |
+| `POST /clock/advance` | `{delta_ms}` | bump the clock (`evm_increaseTime`) |
+| `POST /clock/auto` · `/clock/freeze` | — | resume real-time drift / freeze |
+| `POST /epoch/advance` | `{count?, timestamp_ms?}` | cross epoch boundaries (advances `TxContext` **and** `0x5`) |
+| `POST /object/set_contents` | `{object_id, contents_base64, bump_version?}` | overwrite any object (`anvil_setStorageAt`) |
+| `POST /snapshot` → `{id}` · `POST /revert` | `{id}` | capture / roll back state (`evm_snapshot` / `evm_revert`) |
+| `POST /reset` | — | clear the overlay + epoch/clock to the fork point (`anvil_reset`) |
+| `POST /state/dump` · `/state/load` | `{path}` | persist / reload the fork session to disk |
+| `POST /trace` | `{transaction, full?}` | dry-run + execution trace (commands, gas, object changes, full Move trace) |
+
+```bash
+# Fund a fresh account with 1000 SUI — no whale needed
+curl -XPOST 127.0.0.1:9124/fund -H 'content-type: application/json' \
+  -d '{"address":"0xabc…","amount":1000000000000}'
+
+# Cross two epochs (unblocks epoch-gated staking, etc.)
+curl -XPOST 127.0.0.1:9124/epoch/advance -H 'content-type: application/json' \
+  -d '{"count":2}'
+
+# Snapshot, run some transactions, then roll back
+curl -XPOST 127.0.0.1:9124/snapshot          # → {"id":0}
+# … execute txs …
+curl -XPOST 127.0.0.1:9124/revert -H 'content-type: application/json' -d '{"id":0}'
+```
+
+Because a fork is frozen at a checkpoint (no consensus advances the clock,
+epoch, or randomness beacon), these let you drive that state yourself. Oracles
+work the anvil way too: a forked price feed is stale just like a forked
+Chainlink feed — impersonate the updater or `/object/set_contents` the price
+object to make it fresh.
 
 ## Verifying it's real
 
@@ -179,22 +262,40 @@ Full detail and the reuse-vs-build breakdown are in [`DESIGN.md`](./DESIGN.md).
 
 | | `anvil --fork-url` (EVM) | Aquarium (Sui) |
 |---|---|---|
-| State source | lazy `eth_getStorageAt` | lazy GraphQL object reads |
+| State source | lazy `eth_getStorageAt` | lazy GraphQL object reads (cached) |
 | Execution | EVM | real Move VM (`sui-execution`) |
 | Consensus | none (instant mine) | none (serial sequencer) |
-| Snapshot needed | no | no |
-| Mutates mainnet | no | no |
+| Networks | any RPC url | mainnet / testnet / devnet / custom |
+| Standard RPC | JSON-RPC | full `sui.rpc.v2` gRPC |
+| Impersonation | `anvil_impersonateAccount` | any account (sigs not verified) |
+| Time / storage cheats | `evm_setTime` / `setStorageAt` | `/clock/*` · `/object/set_contents` |
+| Fund an account | `anvil_setBalance` | `/fund` |
+| Snapshot / revert | `evm_snapshot` / `evm_revert` | `/snapshot` · `/revert` |
+| Reset | `anvil_reset` | `/reset` |
+| Persist session | `--dump-state` / `--load-state` | `/state/dump` · `/state/load` |
+| Trace a tx | `debug_traceTransaction` | `/trace` |
+| Sui-specific | — | `/epoch/advance` (+ `0x5` sync) |
+| Mutates real chain | no | no |
 
 ## Status & limitations
 
-Working **proof of concept**. Reads are verified byte-for-byte against mainnet;
-transaction execution runs the real Move VM and chains correctly. Known scope:
+Reads are verified byte-for-byte against mainnet; transaction execution runs the
+real Move VM and has been driven against live DeepBook / Cetus / Navi / Haedal
+bytecode, native staking, and package publishing. The `serve` surface and cheats
+are exercised end-to-end. Honest scope:
 
-- No consensus, no epoch advancement, no validator set.
-- Like Sui transaction replay, input objects are taken at the versions the
-  transaction pins (validation bypassed) — build transactions against current
-  object versions (the `demo` re-reads the gas coin each round).
-- No JSON-RPC/gRPC server yet; the engine is built to back one (see `DESIGN.md`).
+- **No real consensus/economics.** The fork is a serial sequencer. `/epoch/advance`
+  crosses epoch boundaries for `TxContext` and `0x5`, but does **not** settle
+  staking rewards, grow validator exchange rates, or rotate the validator set.
+- **Frozen beacon.** Randomness (`0x8`) can't be forged (no validator DKG), just
+  as anvil can't forge a Chainlink round — use `/object/set_contents` to drive it.
+- **Protocols with off-chain cranks** (e.g. Haedal delayed unstake) can't be
+  advanced past a settlement the fork never runs.
+- Input objects are taken at the versions a transaction pins (validation
+  bypassed), like Sui transaction replay — build against current versions.
+- The read cache is in-memory (fast within a session); use `/state/dump` to
+  persist a session across restarts. A disk cache of fetched state is a possible
+  future addition.
 - Linux release binaries are glibc; Alpine/musl users build via `cargo install`.
 
 ## Contributing

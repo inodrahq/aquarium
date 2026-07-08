@@ -106,15 +106,27 @@ Two halves of "fork the chain and keep going":
 | Runtime-store adapter shape, input resolution | adapted from `sui-replay-2` (Mysten) |
 | Writable overlay, sequencer, fork lifecycle, CLI | **Aquarium (new)** |
 
-## Non-goals (v0)
+## Non-goals
 
-- No consensus, no real epoch advancement, no validator set.
+- No real consensus economics. `/epoch/advance` (see `src/cheats.rs`) crosses
+  epoch boundaries for `TxContext` and the `SuiSystemState` (`0x5`) epoch, but
+  does not settle staking rewards, grow exchange rates, or rotate validators.
 - Shared-object congestion control / true consensus version assignment — the
   executor assigns lamport versions from inputs; serial execution makes this safe
   but it is not byte-identical to what consensus would pick under contention.
-- No JSON-RPC/gRPC server yet. A future `src/rpc.rs` façade would let
-  `@mysten/sui` point at `localhost`; the engine (`Fork::execute` / `simulate`)
-  is built to back it, but the server itself is not implemented.
+- Not forgeable: the randomness beacon (`0x8`) and validator DKG can't be
+  reproduced (drive them with `/object/set_contents` instead).
+
+## The `serve` façade & cheats
+
+`aquarium serve` (`src/serve.rs`) exposes the fork over `sui.rpc.v2` gRPC
+(LedgerService / StateService / MovePackageService / TransactionExecutionService
+/ SubscriptionService), with gRPC-Web + CORS. Alongside it, a JSON control API
+(`src/control.rs`) provides anvil-style cheats — clock, epoch (+ `0x5` sync),
+object override, fund, snapshot/revert, reset, state dump/load, and `/trace` —
+built on the same overlay + `engine::Vm`. Reads go through an in-memory
+read-through cache (`Fork::for_node`); the overlay can be serialized to disk for
+session persistence.
 
 ## Verification strategy
 
