@@ -721,4 +721,59 @@ mod tests {
         let hit = get_one(&overlay, at_checkpoint(id)).expect("resurrected by write");
         assert_eq!(hit.1, 7);
     }
+
+    #[cfg(feature = "execute")]
+    #[test]
+    fn snapshot_and_restore_roll_back_the_overlay() {
+        let (a, b) = (ObjectID::random(), ObjectID::random());
+        let overlay = OverlayStore::new(MockMainnet::default(), 100);
+        overlay.apply_written(object(a, 1));
+
+        let snap = overlay.snapshot();
+
+        // Mutate past the snapshot: add b, tombstone a.
+        overlay.apply_written(object(b, 2));
+        overlay.tombstone(a);
+        assert!(get_one(&overlay, at_checkpoint(a)).is_none());
+        assert!(get_one(&overlay, at_checkpoint(b)).is_some());
+
+        overlay.restore(snap);
+
+        // Back to just a@v1; b is gone and a's tombstone is cleared.
+        assert_eq!(get_one(&overlay, at_checkpoint(a)).unwrap().1, 1);
+        assert!(get_one(&overlay, at_checkpoint(b)).is_none());
+    }
+
+    #[cfg(feature = "execute")]
+    #[test]
+    fn restore_is_repeatable_from_one_snapshot() {
+        let id = ObjectID::random();
+        let overlay = OverlayStore::new(MockMainnet::default(), 100);
+        overlay.apply_written(object(id, 4));
+        let snap = overlay.snapshot();
+        for _ in 0..3 {
+            overlay.apply_written(object(id, 9));
+            assert_eq!(get_one(&overlay, at_checkpoint(id)).unwrap().1, 9);
+            overlay.restore(snap.clone());
+            assert_eq!(get_one(&overlay, at_checkpoint(id)).unwrap().1, 4);
+        }
+    }
+
+    #[cfg(feature = "serve")]
+    #[test]
+    fn export_import_round_trips_objects_and_tombstones() {
+        let (a, b) = (ObjectID::random(), ObjectID::random());
+        let src = OverlayStore::new(MockMainnet::default(), 100);
+        src.apply_written(object(a, 7));
+        src.tombstone(b);
+
+        let persisted = src.export();
+
+        let dst = OverlayStore::new(MockMainnet::default(), 100);
+        dst.import(persisted);
+        // a@v7 came across; b's tombstone hides it from current reads.
+        assert_eq!(get_one(&dst, at_checkpoint(a)).unwrap().1, 7);
+        assert!(get_one(&dst, at_checkpoint(b)).is_none());
+        assert!(dst.overlay_touched_ids().contains(&b), "tombstone imported");
+    }
 }

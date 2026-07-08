@@ -259,4 +259,111 @@ mod tests {
         assert_eq!(ClockMode::Fixed(42).target_ms(), Some(42));
         assert_eq!(ClockMode::Frozen.target_ms(), None);
     }
+
+    // --- cheats that mutate a fork overlay ---
+    // A `for_testing` Move object's contents are a `Coin` (UID + u64), which is
+    // byte-identical to a `Clock` (UID + `timestamp_ms`), so these tests can
+    // exercise the clock cheats and the object-override guard without a network.
+
+    use sui_data_store::ObjectKey;
+    use sui_types::base_types::{SequenceNumber, SuiAddress};
+    use sui_types::object::Owner;
+
+    /// Backing store that knows nothing — every read is a miss, so the overlay
+    /// is the only source of truth (which is what we want to drive here).
+    struct Empty;
+    impl sui_data_store::ObjectStore for Empty {
+        fn get_objects(
+            &self,
+            keys: &[ObjectKey],
+        ) -> std::result::Result<Vec<Option<(Object, u64)>>, anyhow::Error> {
+            Ok(keys.iter().map(|_| None).collect())
+        }
+    }
+
+    fn test_object(id: ObjectID, version: u64) -> Object {
+        Object::with_id_owner_version_for_testing(
+            id,
+            SequenceNumber::from(version),
+            Owner::AddressOwner(SuiAddress::ZERO),
+        )
+    }
+
+    #[test]
+    fn clock_set_and_advance_round_trip() {
+        let fork = Fork::with_store(Empty, 100);
+        fork.store().set_object(test_object(SUI_CLOCK_OBJECT_ID, 5));
+
+        set_clock_timestamp_ms(&fork, 1_000).unwrap();
+        assert_eq!(clock_timestamp_ms(&fork).unwrap(), 1_000);
+
+        // Version was bumped past the original (5).
+        let v = fork
+            .object(SUI_CLOCK_OBJECT_ID)
+            .unwrap()
+            .unwrap()
+            .version()
+            .value();
+        assert!(v > 5, "clock write bumps the object version");
+
+        assert_eq!(advance_clock_ms(&fork, 250).unwrap(), 1_250);
+        assert_eq!(clock_timestamp_ms(&fork).unwrap(), 1_250);
+    }
+
+    #[test]
+    fn set_clock_is_a_noop_when_unchanged() {
+        let fork = Fork::with_store(Empty, 100);
+        fork.store().set_object(test_object(SUI_CLOCK_OBJECT_ID, 5));
+        set_clock_timestamp_ms(&fork, 9_000).unwrap();
+        let v1 = fork
+            .object(SUI_CLOCK_OBJECT_ID)
+            .unwrap()
+            .unwrap()
+            .version()
+            .value();
+        // Setting the same value again must not churn the version.
+        set_clock_timestamp_ms(&fork, 9_000).unwrap();
+        let v2 = fork
+            .object(SUI_CLOCK_OBJECT_ID)
+            .unwrap()
+            .unwrap()
+            .version()
+            .value();
+        assert_eq!(v1, v2);
+    }
+
+    #[test]
+    fn set_object_contents_guards_and_bumps() {
+        let id = ObjectID::random();
+        let fork = Fork::with_store(Empty, 100);
+        fork.store().set_object(test_object(id, 3));
+
+        let uid = id.into_bytes().to_vec();
+        let valid = || {
+            let mut c = uid.clone();
+            c.extend(1_234u64.to_le_bytes());
+            c
+        };
+
+        // Too short to hold a UID.
+        assert!(set_object_contents(&fork, id, vec![0u8; 10], true).is_err());
+        // UID prefix does not match the target id.
+        let mut wrong = ObjectID::random().into_bytes().to_vec();
+        wrong.extend(0u64.to_le_bytes());
+        assert!(set_object_contents(&fork, id, wrong, true).is_err());
+
+        // Valid override bumps the version 3 -> 4.
+        assert_eq!(set_object_contents(&fork, id, valid(), true).unwrap(), 4);
+        // Without bump, the version is preserved.
+        assert_eq!(set_object_contents(&fork, id, valid(), false).unwrap(), 4);
+    }
+
+    #[test]
+    fn set_object_contents_rejects_missing_object() {
+        let fork = Fork::with_store(Empty, 100);
+        let id = ObjectID::random();
+        let mut c = id.into_bytes().to_vec();
+        c.extend(0u64.to_le_bytes());
+        assert!(set_object_contents(&fork, id, c, true).is_err());
+    }
 }
