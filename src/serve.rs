@@ -94,6 +94,9 @@ pub(crate) struct ForkState {
     pub(crate) fork_checkpoint_digest: String,
     /// How the fork drives the on-chain `Clock` (`0x6`); see [`ClockMode`].
     pub(crate) clock: std::sync::Mutex<ClockMode>,
+    /// The epoch + epoch-start timestamp the fork started at, for `reset`.
+    initial_epoch: u64,
+    initial_epoch_start_timestamp_ms: u64,
     /// Captured snapshots by id (see [`ForkState::take_snapshot`]).
     snapshots: std::sync::Mutex<std::collections::HashMap<u64, ForkSnapshot>>,
     /// Next snapshot id to hand out.
@@ -123,6 +126,27 @@ impl ForkState {
             .unwrap_or_else(|p| p.into_inner())
             .insert(id, snapshot);
         id
+    }
+
+    /// Clear the fork back to its starting point: drop the whole overlay, reset
+    /// the epoch and clock to the fork checkpoint, and discard snapshots (the
+    /// anvil `reset` analog — a clean slate without restarting the process).
+    pub(crate) fn reset(&self) -> Result<()> {
+        self.fork.store().clear();
+        self.vm
+            .restore_epoch(self.initial_epoch, self.initial_epoch_start_timestamp_ms);
+        self.snapshots
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+        // The clock object now falls back to the mainnet fork point; re-anchor
+        // auto-drift there.
+        let anchor_ms = crate::cheats::clock_timestamp_ms(&self.fork).unwrap_or(0);
+        *self.clock.lock().unwrap_or_else(|p| p.into_inner()) = ClockMode::Auto {
+            anchor_ms,
+            anchor_at: std::time::Instant::now(),
+        };
+        Ok(())
     }
 
     /// Roll the fork back to a captured snapshot. The snapshot is retained, so
@@ -235,6 +259,9 @@ pub fn run(
     // Default the clock to real wall-clock drift from the fork point, so a fresh
     // fork advances time like the live chain instead of freezing at the fork.
     let anchor_ms = crate::cheats::clock_timestamp_ms(&fork).unwrap_or(0);
+    // Capture the starting epoch parameters so `/reset` can restore them.
+    let vm_initial_epoch = vm.epoch();
+    let vm_initial_epoch_start = vm.epoch_start_timestamp_ms();
     let shared = Arc::new(ForkState {
         fork,
         vm,
@@ -246,6 +273,8 @@ pub fn run(
             anchor_ms,
             anchor_at: std::time::Instant::now(),
         }),
+        initial_epoch: vm_initial_epoch,
+        initial_epoch_start_timestamp_ms: vm_initial_epoch_start,
         snapshots: std::sync::Mutex::new(std::collections::HashMap::new()),
         next_snapshot: std::sync::atomic::AtomicU64::new(0),
     });

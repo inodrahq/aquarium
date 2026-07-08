@@ -184,6 +184,14 @@ impl<S> OverlayStore<S> {
         }
     }
 
+    /// Clear the entire local overlay back to empty — every locally executed
+    /// transaction, object write, tombstone and address balance is dropped (the
+    /// anvil `reset` analog). The backing network state is untouched.
+    #[cfg(feature = "execute")]
+    pub(crate) fn clear(&self) {
+        *self.state.write().expect("overlay state poisoned") = OverlayState::default();
+    }
+
     /// Replace the overlay with a previously [`export`](Self::export)ed one.
     #[cfg(feature = "serve")]
     pub(crate) fn import(&self, persisted: PersistedOverlay) {

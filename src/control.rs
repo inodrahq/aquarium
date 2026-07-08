@@ -22,6 +22,8 @@
 //! - `POST /revert`               — `{ "id": N }`  roll back to a snapshot
 //! - `POST /state/dump`           — `{ "path": "…" }`  write fork state to disk
 //! - `POST /state/load`           — `{ "path": "…" }`  reload fork state
+//! - `POST /fund`                 — `{ "address", "amount", "coin_type"? }`  mint a coin
+//! - `POST /reset`                — clear the overlay + epoch/clock to the fork point
 //! - `POST /trace`                — `{ "transaction": "<b64>", "full"? }`  dry-run + trace
 
 use std::sync::Arc;
@@ -54,6 +56,8 @@ pub(crate) fn router(state: Arc<ForkState>) -> Router {
         .route("/revert", post(revert))
         .route("/state/dump", post(state_dump))
         .route("/state/load", post(state_load))
+        .route("/fund", post(fund))
+        .route("/reset", post(reset))
         .route("/trace", post(trace))
         .with_state(state)
 }
@@ -371,6 +375,62 @@ struct TraceReq {
     transaction: String,
     /// Include the full compressed Move opcode trace (large). Default false.
     full: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct Fund {
+    address: String,
+    amount: u64,
+    /// Coin type to mint (default `0x2::sui::SUI`).
+    coin_type: Option<String>,
+}
+
+#[derive(Serialize)]
+struct FundResult {
+    address: String,
+    coin_object_id: String,
+    amount: u64,
+    coin_type: String,
+}
+
+/// Mint a coin of `amount` into `address` (anvil `setBalance`).
+async fn fund(
+    State(state): State<Arc<ForkState>>,
+    Json(req): Json<Fund>,
+) -> Result<Json<FundResult>, ApiError> {
+    use std::str::FromStr;
+    let address = sui_types::base_types::SuiAddress::from_str(&req.address).map_err(bad)?;
+    let coin_type_str = req
+        .coin_type
+        .clone()
+        .unwrap_or_else(|| "0x2::sui::SUI".to_string());
+    let coin_type = sui_types::parse_sui_type_tag(&coin_type_str).map_err(bad)?;
+    let canonical = coin_type.to_canonical_string(true);
+    let s = state.clone();
+    let amount = req.amount;
+    let id = blocking(move || crate::cheats::fund(&s.fork, address, amount, coin_type)).await?;
+    Ok(Json(FundResult {
+        address: address.to_string(),
+        coin_object_id: id.to_hex_literal(),
+        amount,
+        coin_type: canonical,
+    }))
+}
+
+#[derive(Serialize)]
+struct ResetResult {
+    epoch: u64,
+    executed_transactions: u64,
+}
+
+/// Clear the fork back to its starting point (anvil `reset`).
+async fn reset(State(state): State<Arc<ForkState>>) -> Result<Json<ResetResult>, ApiError> {
+    let s = state.clone();
+    blocking(move || s.reset()).await?;
+    Ok(Json(ResetResult {
+        epoch: state.epoch(),
+        executed_transactions: state.fork.store().executed_count() as u64,
+    }))
 }
 
 /// Dry-run a transaction and return an execution trace (command summary, gas,

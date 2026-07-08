@@ -158,6 +158,47 @@ pub fn set_object_contents<S: ObjectStore>(
     Ok(version)
 }
 
+/// Mint a fresh `Coin<coin_type>` of `amount` owned by `address` directly into
+/// the overlay — the anvil `setBalance` analog, so a developer gets a funded
+/// test account without impersonating a whale. The coin is fabricated (a fork
+/// bypasses supply invariants), so this can fund any coin type. Returns the new
+/// coin's object id.
+pub fn fund<S: ObjectStore>(
+    fork: &Fork<S>,
+    address: sui_types::base_types::SuiAddress,
+    amount: u64,
+    coin_type: sui_types::TypeTag,
+) -> Result<ObjectID> {
+    use sui_types::base_types::MoveObjectType;
+    use sui_types::coin::Coin;
+    use sui_types::object::{MoveObject, Owner};
+
+    // Generous size bound; our contents are ~40 bytes (UID + u64 balance).
+    const MAX_MOVE_OBJECT_SIZE: u64 = 256 * 1024;
+
+    let id = ObjectID::random();
+    let contents = bcs::to_bytes(&Coin::new(id, amount)).context("encoding Coin contents")?;
+    let move_type: MoveObjectType = Coin::type_(coin_type).into();
+    // Safe: `Coin<T>` always has `store` (public transfer), matching the flag.
+    let move_obj = unsafe {
+        MoveObject::new_from_execution_with_limit(
+            move_type,
+            /* has_public_transfer */ true,
+            SequenceNumber::from(1),
+            contents,
+            MAX_MOVE_OBJECT_SIZE,
+        )
+    }
+    .map_err(|e| anyhow::anyhow!("building coin object: {e}"))?;
+    let object = Object::new_move(
+        move_obj,
+        Owner::AddressOwner(address),
+        TransactionDigest::default(),
+    );
+    fork.store().set_object(object);
+    Ok(id)
+}
+
 type SystemStateField = sui_types::dynamic_field::Field<
     u64,
     sui_types::sui_system_state::sui_system_state_inner_v2::SuiSystemStateInnerV2,
