@@ -21,16 +21,16 @@ serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
-# --- Sui crates (reference: github.com/MystenLabs/sui @ testnet-v1.74.1) ---
+# --- Sui crates (reference: github.com/MystenLabs/sui @ testnet-v1.76.0) ---
 # We depend on these as published git crates so this project stays fully
 # standalone (it never links into a local Sui checkout). The execution engine
 # and data-store traits are Mysten's; see NOTICE for attribution.
-sui-data-store = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.74.1" }
-sui-types = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.74.1" }
+sui-data-store = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.76.0" }
+sui-types = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.76.0" }
 # Execution layer (heavy tree) — enabled once the read layer is validated.
-sui-execution = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.74.1", optional = true }
+sui-execution = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.76.0", optional = true }
 # Move VM execution trace format (for surfacing per-transaction traces).
-move-trace-format = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.74.1", optional = true }
+move-trace-format = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.76.0", optional = true }
 prometheus = { version = "0.14", optional = true }
 
 # --- gRPC façade (`serve` feature) ---
@@ -56,8 +56,8 @@ axum = { version = "0.8", optional = true }
 base64 = { version = "0.22", optional = true }
 # Bytecode parsing for MovePackageService (GetDatatype / GetFunction). Pinned to
 # the same Sui tag as sui-types for CompiledModule wire compatibility.
-move-binary-format = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.74.1", optional = true }
-move-core-types = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.74.1", optional = true }
+move-binary-format = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.76.0", optional = true }
+move-core-types = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.76.0", optional = true }
 
 [features]
 # `execute` pulls in the Move VM / adapter so a fork can run new transactions.
