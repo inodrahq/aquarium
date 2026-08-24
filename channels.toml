@@ -12,6 +12,6 @@
 # activation. mainnet is exact validator parity; devnet is a bleeding-edge
 # canary (CI-only, built from source via install.sh).
 
-mainnet = "mainnet-v1.74.1"
+mainnet = "mainnet-v1.77.3"
 testnet = "testnet-v1.74.1"
 devnet = "devnet-v1.74.0"
