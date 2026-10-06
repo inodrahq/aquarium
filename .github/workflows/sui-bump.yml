@@ -90,6 +90,6 @@ jobs:
             Before merging:
             - [ ] CI is green — including the `channel-${{ matrix.channel }}` leg (upstream API breakage lands in `src/engine/vm.rs` first — see its history)
             - [ ] E2e smoke: `aquarium info`, `aquarium object --id 0x6`, `aquarium demo` against a live sender/coin
-          reviewers: argos-inodra
+          reviewers: 0xArgos, Cilooth
           labels: dependencies
           delete-branch: true
