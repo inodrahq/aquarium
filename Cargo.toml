@@ -21,23 +21,23 @@ serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
-# --- Sui crates (reference: github.com/MystenLabs/sui @ testnet-v1.74.1) ---
+# --- Sui crates (reference: github.com/MystenLabs/sui @ testnet-v1.81.0) ---
 # We depend on these as published git crates so this project stays fully
 # standalone (it never links into a local Sui checkout). The execution engine
 # and data-store traits are Mysten's; see NOTICE for attribution.
-sui-data-store = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.74.1" }
-sui-types = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.74.1" }
+sui-data-store = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.81.0" }
+sui-types = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.81.0" }
 # Execution layer (heavy tree) — enabled once the read layer is validated.
-sui-execution = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.74.1", optional = true }
+sui-execution = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.81.0", optional = true }
 # Move VM execution trace format (for surfacing per-transaction traces).
-move-trace-format = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.74.1", optional = true }
+move-trace-format = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.81.0", optional = true }
 prometheus = { version = "0.14", optional = true }
 
 # --- gRPC façade (`serve` feature) ---
 # Generated sui.rpc.v2 proto types + tonic server stubs, from Mysten's Rust SDK.
 # The rev is chosen to match the sui-types tag above (BCS wire compatibility).
-sui-rpc = { git = "https://github.com/MystenLabs/sui-rust-sdk.git", rev = "f383e14deec809886aa5e67ce734105a3883f1d4", optional = true }
-sui-sdk-types = { git = "https://github.com/MystenLabs/sui-rust-sdk.git", rev = "f383e14deec809886aa5e67ce734105a3883f1d4", optional = true }
+sui-rpc = { git = "https://github.com/MystenLabs/sui-rust-sdk.git", rev = "788907487b40bc341bd90ee26428c4098fc1e515", optional = true }
+sui-sdk-types = { git = "https://github.com/MystenLabs/sui-rust-sdk.git", rev = "788907487b40bc341bd90ee26428c4098fc1e515", optional = true }
 bcs = { version = "0.1", optional = true }
 serde = { version = "1", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"], optional = true }
@@ -56,8 +56,8 @@ axum = { version = "0.8", optional = true }
 base64 = { version = "0.22", optional = true }
 # Bytecode parsing for MovePackageService (GetDatatype / GetFunction). Pinned to
 # the same Sui tag as sui-types for CompiledModule wire compatibility.
-move-binary-format = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.74.1", optional = true }
-move-core-types = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.74.1", optional = true }
+move-binary-format = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.81.0", optional = true }
+move-core-types = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.81.0", optional = true }
 
 [features]
 # `execute` pulls in the Move VM / adapter so a fork can run new transactions.
