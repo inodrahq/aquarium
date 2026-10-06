@@ -25,7 +25,7 @@ use sui_types::committee::EpochId;
 use sui_types::error::{SuiErrorKind, SuiResult};
 use sui_types::object::Object;
 use sui_types::storage::{
-    BackingPackageStore, ChildObjectResolver, ObjectStore, PackageObject, ParentSync,
+    BackingPackageStore, ObjectStore, PackageObject, ParentSync, RuntimeObjectResolver,
 };
 
 /// Runtime-store adapter over a fork's data store, pinned at a checkpoint.
@@ -132,7 +132,7 @@ impl ObjectStore for RuntimeStore<'_> {
     }
 }
 
-impl ChildObjectResolver for RuntimeStore<'_> {
+impl RuntimeObjectResolver for RuntimeStore<'_> {
     fn read_child_object(
         &self,
         _parent: &ObjectID,

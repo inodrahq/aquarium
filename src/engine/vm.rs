@@ -19,7 +19,8 @@ use std::sync::Arc;
 use anyhow::{Result, anyhow};
 use sui_data_store::{ObjectKey, ObjectStore as DataObjectStore, VersionQuery};
 use sui_execution::Executor;
-use sui_types::base_types::ObjectID;
+use sui_types::accumulator_root::EmptyUnsettledObjectFunds;
+use sui_types::base_types::{ObjectID, SystemObjectVersions};
 use sui_types::digests::TransactionDigest;
 use sui_types::effects::{TransactionEffects, TransactionEffectsAPI};
 use sui_types::error::ExecutionError;
@@ -182,7 +183,7 @@ impl Vm {
         let checked = CheckedInputObjects::new_for_replay(input_objects);
 
         let gas_status = if tx_data.kind().is_system_tx() {
-            SuiGasStatus::new_unmetered()
+            SuiGasStatus::new_unmetered(&self.protocol_config)
         } else {
             // The fork executes replay-style, skipping mainnet's pre-execution
             // validity checks. Re-apply the gas-payment check here: otherwise a
@@ -218,6 +219,9 @@ impl Vm {
         let epoch_start_timestamp_ms = self.epoch_start_timestamp_ms();
 
         let runtime_store = RuntimeStore::new(store, fork_checkpoint);
+        // No consensus to assign the accumulator root's version in a fork, so
+        // pin the current one (as upstream's simulacrum does).
+        let system_object_versions = SystemObjectVersions::from_latest_in_store(&runtime_store);
         let mut trace = capture_trace.then(move_trace_format::format::MoveTraceBuilder::new);
         let (inner_store, gas_status, effects, _timing, status) = self
             .executor
@@ -230,6 +234,9 @@ impl Vm {
                 &epoch,
                 epoch_start_timestamp_ms,
                 checked,
+                system_object_versions,
+                // Unsettled withdrawals aren't tracked in a fork (as in upstream replay).
+                &EmptyUnsettledObjectFunds,
                 tx_data.gas_data().clone(),
                 gas_status,
                 tx_data.kind().clone(),
