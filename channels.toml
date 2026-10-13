@@ -14,4 +14,4 @@
 
 mainnet = "mainnet-v1.80.1"
 testnet = "testnet-v1.81.0"
-devnet = "devnet-v1.81.0"
+devnet = "devnet-v1.82.0"
