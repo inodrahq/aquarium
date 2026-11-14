@@ -219,9 +219,10 @@ impl Vm {
         let epoch_start_timestamp_ms = self.epoch_start_timestamp_ms();
 
         let runtime_store = RuntimeStore::new(store, fork_checkpoint);
-        // No consensus to assign the accumulator root's version in a fork, so
-        // pin the current one (as upstream's simulacrum does).
-        let system_object_versions = SystemObjectVersions::from_latest_in_store(&runtime_store);
+        // No consensus to assign system object versions in a fork, so pin the
+        // declared inputs or else the current ones (as upstream's simulacrum does).
+        let system_object_versions =
+            SystemObjectVersions::from_inputs_or_latest_in_store(checked.inner(), &runtime_store);
         let mut trace = capture_trace.then(move_trace_format::format::MoveTraceBuilder::new);
         let (inner_store, gas_status, effects, _timing, status) = self
             .executor
