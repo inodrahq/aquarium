@@ -466,16 +466,46 @@ where
                     out.push(None);
                     continue;
                 }
-                // Defer to mainnet.
+                // Defer to mainnet. A root-version bound can exceed anything
+                // that existed at the fork point (a local commit bumps the
+                // root), and mainnet would then answer with a version written
+                // after the fork. Ask for fork-point state instead.
+                let version_query = match key.version_query {
+                    VersionQuery::RootVersion(_) => {
+                        VersionQuery::AtCheckpoint(self.fork_checkpoint)
+                    }
+                    ref q => q.clone(),
+                };
                 miss_slots.push(out.len());
-                miss_keys.push(key.clone());
+                miss_keys.push(ObjectKey {
+                    object_id: key.object_id,
+                    version_query,
+                });
                 out.push(None);
             }
         }
 
-        if !miss_keys.is_empty() {
-            let fetched = with_retry(|| self.inner.get_objects(&miss_keys))?;
-            for (slot, value) in miss_slots.into_iter().zip(fetched) {
+        if miss_keys.is_empty() {
+            return Ok(out);
+        }
+        let fetched = with_retry(|| self.inner.get_objects(&miss_keys))?;
+        let mut older_slots: Vec<usize> = Vec::new();
+        let mut older_keys: Vec<ObjectKey> = Vec::new();
+        for (slot, value) in miss_slots.into_iter().zip(fetched) {
+            if let VersionQuery::RootVersion(max) = keys[slot].version_query
+                && value.as_ref().is_some_and(|(_, v)| *v > max)
+            {
+                // Bound is below the fork-point version, so the bounded read
+                // is pre-fork history and safe to take from mainnet.
+                older_slots.push(slot);
+                older_keys.push(keys[slot].clone());
+                continue;
+            }
+            out[slot] = value;
+        }
+        if !older_keys.is_empty() {
+            let fetched = with_retry(|| self.inner.get_objects(&older_keys))?;
+            for (slot, value) in older_slots.into_iter().zip(fetched) {
                 out[slot] = value;
             }
         }
@@ -574,6 +604,14 @@ mod tests {
         }
     }
 
+    impl MockMainnet {
+        /// A version written on mainnet after the fork checkpoint.
+        fn insert_after_fork(&mut self, object: Object) {
+            self.versioned
+                .insert((object.id(), object.version().value()), object);
+        }
+    }
+
     impl ObjectStore for MockMainnet {
         fn get_objects(&self, keys: &[ObjectKey]) -> Result<Vec<Option<(Object, u64)>>, Error> {
             Ok(keys
@@ -582,9 +620,11 @@ mod tests {
                     let version = match k.version_query {
                         VersionQuery::Version(v) => Some(v),
                         VersionQuery::AtCheckpoint(_) => self.latest.get(&k.object_id).copied(),
-                        VersionQuery::RootVersion(max) => {
-                            self.latest.get(&k.object_id).copied().filter(|v| *v <= max)
-                        }
+                        VersionQuery::RootVersion(max) => self
+                            .versioned
+                            .range((k.object_id, 0)..=(k.object_id, max))
+                            .next_back()
+                            .map(|((_, v), _)| *v),
                     };
                     version.and_then(|v| {
                         self.versioned
@@ -701,6 +741,49 @@ mod tests {
         );
         // A historical version remains addressable on mainnet.
         assert!(get_one(&overlay, at_version(id, 5)).is_some());
+    }
+
+    fn at_root_version(id: ObjectID, max: u64) -> ObjectKey {
+        ObjectKey {
+            object_id: id,
+            version_query: VersionQuery::RootVersion(max),
+        }
+    }
+
+    #[test]
+    fn root_version_read_ignores_post_fork_mainnet_versions() {
+        let child = ObjectID::random();
+        let mut mainnet = MockMainnet::default();
+        mainnet.insert(object(child, 5));
+        mainnet.insert_after_fork(object(child, 8));
+        let overlay = OverlayStore::new(mainnet, 100);
+
+        // A local commit bumped the root to v8, the same version mainnet's own
+        // post-fork transaction reached.
+        let hit = get_one(&overlay, at_root_version(child, 8)).expect("child exists at fork");
+        assert_eq!(hit.1, 5, "must not see the version written after the fork");
+    }
+
+    #[test]
+    fn root_version_read_does_not_see_post_fork_creations() {
+        let child = ObjectID::random();
+        let mut mainnet = MockMainnet::default();
+        mainnet.insert_after_fork(object(child, 8));
+        let overlay = OverlayStore::new(mainnet, 100);
+
+        assert!(get_one(&overlay, at_root_version(child, 8)).is_none());
+    }
+
+    #[test]
+    fn root_version_bound_below_fork_point_reads_history() {
+        let child = ObjectID::random();
+        let mut mainnet = MockMainnet::default();
+        mainnet.insert(object(child, 3));
+        mainnet.insert(object(child, 5));
+        let overlay = OverlayStore::new(mainnet, 100);
+
+        let hit = get_one(&overlay, at_root_version(child, 4)).expect("older version exists");
+        assert_eq!(hit.1, 3);
     }
 
     #[test]
