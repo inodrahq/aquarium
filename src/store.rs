@@ -837,6 +837,33 @@ mod tests {
 
     #[cfg(feature = "execute")]
     #[test]
+    fn child_write_is_seen_by_next_read_and_gone_after_restore() {
+        let child = ObjectID::random();
+        let mut mainnet = MockMainnet::default();
+        mainnet.insert(object(child, 5));
+        mainnet.insert_after_fork(object(child, 8));
+        let overlay = OverlayStore::new(mainnet, 100);
+        let snap = overlay.snapshot();
+
+        // Twice over: snapshot -> execute -> revert -> execute.
+        for _ in 0..2 {
+            assert_eq!(get_one(&overlay, at_root_version(child, 9)).unwrap().1, 5);
+            // A local transaction writes the child at v9; the next one reads
+            // it under the root's new version.
+            overlay.apply_written(object(child, 9));
+            assert_eq!(get_one(&overlay, at_root_version(child, 10)).unwrap().1, 9);
+
+            overlay.restore(snap.clone());
+            assert_eq!(
+                get_one(&overlay, at_root_version(child, 10)).unwrap().1,
+                5,
+                "revert returns to fork-point state, not mainnet's later v8"
+            );
+        }
+    }
+
+    #[cfg(feature = "execute")]
+    #[test]
     fn restore_is_repeatable_from_one_snapshot() {
         let id = ObjectID::random();
         let overlay = OverlayStore::new(MockMainnet::default(), 100);
