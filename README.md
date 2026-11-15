@@ -189,7 +189,7 @@ the `sui.rpc.v2` surface so that stays a faithful node twin. The anvil analogy:
 | `POST /clock/advance` | `{delta_ms}` | bump the clock (`evm_increaseTime`) |
 | `POST /clock/auto` · `/clock/freeze` | — | resume real-time drift / freeze |
 | `POST /epoch/advance` | `{count?, timestamp_ms?}` | cross epoch boundaries (advances `TxContext` **and** `0x5`) |
-| `POST /object/set_contents` | `{object_id, contents_base64, bump_version?}` | overwrite any object (`anvil_setStorageAt`) |
+| `POST /object/set_contents` | `{object_id, contents_base64, bump_version?}` | overwrite any object (`anvil_setStorageAt`); a dynamic-field child keeps its version |
 | `POST /snapshot` → `{id}` · `POST /revert` | `{id}` | capture / roll back state (`evm_snapshot` / `evm_revert`) |
 | `POST /reset` | — | clear the overlay + epoch/clock to the fork point (`anvil_reset`) |
 | `POST /state/dump` · `/state/load` | `{path}` | persist / reload the fork session to disk |
@@ -211,7 +211,11 @@ curl -XPOST 127.0.0.1:9124/revert -H 'content-type: application/json' -d '{"id":
 ```
 
 Because a fork is frozen at a checkpoint (no consensus advances the clock,
-epoch, or randomness beacon), these let you drive that state yourself. Oracles
+epoch, or randomness beacon), these let you drive that state yourself. The
+clock follows wall time from the fork point by default, so a protocol with a
+price-staleness window starts rejecting forked prices once that window passes;
+start with `serve --clock frozen` (or call `/clock/freeze` / `/clock/set`) to
+hold it still. Oracles
 work the anvil way too: a forked price feed is stale just like a forked
 Chainlink feed — impersonate the updater or `/object/set_contents` the price
 object to make it fresh.

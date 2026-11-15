@@ -233,6 +233,53 @@ impl Gql {
         Ok(out)
     }
 
+    /// `(package id, version)` for every version of the package at `address`
+    /// (any of its versions) published at or before `max_checkpoint`, oldest
+    /// first.
+    #[cfg(feature = "serve")]
+    pub fn package_versions(
+        &self,
+        address: &str,
+        max_checkpoint: u64,
+    ) -> Result<Vec<(String, u64)>> {
+        const PAGE_CAP: usize = 40;
+        let mut out = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..PAGE_CAP {
+            let after = cursor
+                .as_deref()
+                .map(|c| format!(", after: \"{c}\""))
+                .unwrap_or_default();
+            let q = format!(
+                "{{ packageVersions(address: \"{address}\", first: 50{after}) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ address version previousTransaction {{ effects {{ checkpoint {{ sequenceNumber }} }} }} }} }} }}"
+            );
+            let data = self.query(&q)?;
+            let versions = &data["packageVersions"];
+            for node in versions["nodes"].as_array().into_iter().flatten() {
+                let id = node["address"]
+                    .as_str()
+                    .ok_or_else(|| anyhow!("package version missing address: {node}"))?;
+                let version = node["version"]
+                    .as_u64()
+                    .ok_or_else(|| anyhow!("package version missing version: {node}"))?;
+                let checkpoint =
+                    node["previousTransaction"]["effects"]["checkpoint"]["sequenceNumber"]
+                        .as_u64()
+                        .ok_or_else(|| anyhow!("package version missing checkpoint: {node}"))?;
+                if checkpoint <= max_checkpoint {
+                    out.push((id.to_string(), version));
+                }
+            }
+            if versions["pageInfo"]["hasNextPage"].as_bool() != Some(true) {
+                return Ok(out);
+            }
+            cursor = versions["pageInfo"]["endCursor"].as_str().map(String::from);
+        }
+        Err(anyhow!(
+            "package {address} has more versions than the page cap"
+        ))
+    }
+
     /// The chain identifier (genesis checkpoint digest), useful as a sanity check.
     pub fn chain_identifier(&self) -> Result<String> {
         let data = self.query("{ chainIdentifier }")?;

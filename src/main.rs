@@ -86,6 +86,10 @@ enum Command {
         /// Port for the JSON cheat-control API (defaults to `port` + 1).
         #[arg(long)]
         control_port: Option<u16>,
+        /// `auto` advances the on-chain clock with wall time from the fork
+        /// point; `frozen` holds it there (oracle prices never go stale).
+        #[arg(long, default_value = "auto", value_parser = ["auto", "frozen"])]
+        clock: String,
     },
 }
 
@@ -164,6 +168,7 @@ fn main() -> Result<()> {
             checkpoint,
             port,
             control_port,
+            clock,
         } => {
             let cp = resolve_checkpoint(&gql, checkpoint)?;
             let control_port = control_port.unwrap_or(port + 1);
@@ -196,6 +201,7 @@ fn main() -> Result<()> {
                 fork_digest,
                 port,
                 control_port,
+                clock == "frozen",
             )?;
         }
     }

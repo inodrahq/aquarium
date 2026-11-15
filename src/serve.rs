@@ -94,6 +94,8 @@ pub(crate) struct ForkState {
     pub(crate) fork_checkpoint_digest: String,
     /// How the fork drives the on-chain `Clock` (`0x6`); see [`ClockMode`].
     pub(crate) clock: std::sync::Mutex<ClockMode>,
+    /// Started with `--clock frozen`; `/reset` returns to this.
+    pub(crate) start_frozen: bool,
     /// The epoch + epoch-start timestamp the fork started at, for `reset`.
     initial_epoch: u64,
     initial_epoch_start_timestamp_ms: u64,
@@ -140,12 +142,9 @@ impl ForkState {
             .unwrap_or_else(|p| p.into_inner())
             .clear();
         // The clock object now falls back to the mainnet fork point; re-anchor
-        // auto-drift there.
-        let anchor_ms = crate::cheats::clock_timestamp_ms(&self.fork).unwrap_or(0);
-        *self.clock.lock().unwrap_or_else(|p| p.into_inner()) = ClockMode::Auto {
-            anchor_ms,
-            anchor_at: std::time::Instant::now(),
-        };
+        // there.
+        *self.clock.lock().unwrap_or_else(|p| p.into_inner()) =
+            initial_clock_mode(&self.fork, self.start_frozen);
         Ok(())
     }
 
@@ -239,6 +238,18 @@ impl ForkState {
     }
 }
 
+/// The clock mode a fork starts in: real wall-clock drift from the fork point
+/// (time advances like the live chain), or frozen at the fork point.
+fn initial_clock_mode(fork: &Fork<CachedNetworkStore>, frozen: bool) -> ClockMode {
+    if frozen {
+        return ClockMode::Frozen;
+    }
+    ClockMode::Auto {
+        anchor_ms: crate::cheats::clock_timestamp_ms(fork).unwrap_or(0),
+        anchor_at: std::time::Instant::now(),
+    }
+}
+
 /// The gRPC service implementation (one clone per registered service).
 #[derive(Clone)]
 struct AquariumRpc(Arc<ForkState>);
@@ -255,10 +266,9 @@ pub fn run(
     fork_checkpoint_digest: String,
     port: u16,
     control_port: u16,
+    start_frozen: bool,
 ) -> Result<()> {
-    // Default the clock to real wall-clock drift from the fork point, so a fresh
-    // fork advances time like the live chain instead of freezing at the fork.
-    let anchor_ms = crate::cheats::clock_timestamp_ms(&fork).unwrap_or(0);
+    let clock = initial_clock_mode(&fork, start_frozen);
     // Capture the starting epoch parameters so `/reset` can restore them.
     let vm_initial_epoch = vm.epoch();
     let vm_initial_epoch_start = vm.epoch_start_timestamp_ms();
@@ -269,10 +279,8 @@ pub fn run(
         chain_name,
         network_gql_url,
         fork_checkpoint_digest,
-        clock: std::sync::Mutex::new(ClockMode::Auto {
-            anchor_ms,
-            anchor_at: std::time::Instant::now(),
-        }),
+        clock: std::sync::Mutex::new(clock),
+        start_frozen,
         initial_epoch: vm_initial_epoch,
         initial_epoch_start_timestamp_ms: vm_initial_epoch_start,
         snapshots: std::sync::Mutex::new(std::collections::HashMap::new()),
@@ -1129,28 +1137,24 @@ impl MovePackageService for AquariumRpc {
         &self,
         request: Request<proto::ListPackageVersionsRequest>,
     ) -> Result<Response<proto::ListPackageVersionsResponse>, Status> {
-        // A fork is pinned to one checkpoint, so it sees a single version of a
-        // package. Return that one; a full version history would need a node's
-        // package index, which a fork does not maintain.
         let req = request.into_inner();
         let id = parse_object_id(req.package_id.as_deref().unwrap_or_default())?;
         let state = self.0.clone();
-        let version = tokio::task::spawn_blocking(move || -> Result<u64> {
-            let object = state
-                .fork
-                .object(id)?
-                .with_context(|| format!("package {id} not found on the fork"))?;
-            Ok(object.version().value())
-        })
-        .await
-        .map_err(internal)?
-        .map_err(internal)?;
+        let versions = tokio::task::spawn_blocking(move || package_versions(&state, id))
+            .await
+            .map_err(internal)?
+            .map_err(internal)?;
 
-        let mut entry = proto::PackageVersion::default();
-        entry.package_id = Some(id.to_hex_literal());
-        entry.version = Some(version);
         let mut response = proto::ListPackageVersionsResponse::default();
-        response.versions = vec![entry];
+        response.versions = versions
+            .into_iter()
+            .map(|(package_id, version)| {
+                let mut entry = proto::PackageVersion::default();
+                entry.package_id = Some(package_id.to_hex_literal());
+                entry.version = Some(version);
+                entry
+            })
+            .collect();
         Ok(Response::new(response))
     }
 }
@@ -1233,16 +1237,57 @@ impl TransactionExecutionService for AquariumRpc {
         let tx_data = decode_transaction(req.transaction.as_ref())?;
 
         let state = self.0.clone();
-        let outcome = tokio::task::spawn_blocking(move || state.fork.simulate(&state.vm, tx_data))
-            .await
-            .map_err(internal)?
-            .map_err(exec_error)?;
+        let outcome = tokio::task::spawn_blocking(move || {
+            // Same clock an execute would see, or the two disagree.
+            state.prepare_clock();
+            state.fork.simulate(&state.vm, tx_data)
+        })
+        .await
+        .map_err(internal)?
+        .map_err(exec_error)?;
 
         let mut response = proto::SimulateTransactionResponse::default();
         response.transaction =
             Some(outcome_to_proto(&outcome, self.0.fork.fork_checkpoint()).map_err(internal)?);
         Ok(Response::new(response))
     }
+}
+
+/// Every version of the package `id` belongs to that the fork can see: the
+/// network's versions up to the fork checkpoint, plus upgrades published on the
+/// fork itself. Oldest first.
+fn package_versions(state: &ForkState, id: ObjectID) -> Result<Vec<(ObjectID, u64)>> {
+    let object = state
+        .fork
+        .object(id)?
+        .with_context(|| format!("package {id} not found on the fork"))?;
+    let package = object
+        .data
+        .try_as_package()
+        .with_context(|| format!("object {id} is not a Move package"))?;
+    let original = package.original_package_id();
+
+    let mut versions: std::collections::BTreeMap<u64, ObjectID> = std::collections::BTreeMap::new();
+    let listed = Gql::new(&state.network_gql_url)
+        .and_then(|gql| gql.package_versions(&id.to_hex_literal(), state.fork.fork_checkpoint()));
+    match listed {
+        Ok(listed) => {
+            for (package_id, version) in listed {
+                versions.insert(version, ObjectID::from_hex_literal(&package_id)?);
+            }
+        }
+        // A package published on the fork is unknown to the network.
+        Err(e) => tracing::debug!("network has no version list for {id}: {e}"),
+    }
+    for local in state.fork.store().overlay_objects() {
+        if let Some(p) = local.data.try_as_package()
+            && p.original_package_id() == original
+        {
+            versions.insert(p.version().value(), p.id());
+        }
+    }
+    versions.insert(package.version().value(), id);
+    Ok(versions.into_iter().map(|(v, id)| (id, v)).collect())
 }
 
 /// Base64-decode helper shared with the control API.
@@ -1267,6 +1312,7 @@ pub(crate) fn trace_transaction(
     let bytes = b64_decode(tx_b64)?;
     let tx_data: sui_types::transaction::TransactionData =
         bcs::from_bytes(&bytes).context("decoding TransactionData BCS")?;
+    state.prepare_clock();
     let outcome = state.fork.simulate_traced(&state.vm, tx_data)?;
 
     let commands: Vec<String> = match outcome.tx_data.kind() {

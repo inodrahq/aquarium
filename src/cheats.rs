@@ -116,6 +116,10 @@ pub fn advance_clock_ms<S: ObjectStore>(fork: &Fork<S>, delta_ms: u64) -> Result
 /// As a guard against corrupting the overlay, the contents must still begin with
 /// the object's own `UID` (its 32-byte id); a package or absent object is an
 /// error. Returns the object's version after the write.
+///
+/// A dynamic-field child (owned by another object) keeps its version whatever
+/// `bump_version` says: execution reads children at or below their root's
+/// version, so a child bumped past its root would be skipped.
 pub fn set_object_contents<S: ObjectStore>(
     fork: &Fork<S>,
     id: ObjectID,
@@ -146,7 +150,8 @@ pub fn set_object_contents<S: ObjectStore>(
     }
 
     move_obj.set_contents_unsafe(contents);
-    let version = if bump_version {
+    let is_child = matches!(obj.owner(), sui_types::object::Owner::ObjectOwner(_));
+    let version = if bump_version && !is_child {
         let next = obj.version().value().saturating_add(1);
         move_obj.increment_version_to(SequenceNumber::from(next));
         next
@@ -397,6 +402,27 @@ mod tests {
         assert_eq!(set_object_contents(&fork, id, valid(), true).unwrap(), 4);
         // Without bump, the version is preserved.
         assert_eq!(set_object_contents(&fork, id, valid(), false).unwrap(), 4);
+    }
+
+    #[test]
+    fn set_object_contents_keeps_a_child_objects_version() {
+        let id = ObjectID::random();
+        let fork = Fork::with_store(Empty, 100);
+        fork.store()
+            .set_object(Object::with_id_owner_version_for_testing(
+                id,
+                SequenceNumber::from(3),
+                Owner::ObjectOwner(SuiAddress::ZERO),
+            ));
+        let mut contents = id.into_bytes().to_vec();
+        contents.extend(1_234u64.to_le_bytes());
+
+        assert_eq!(
+            set_object_contents(&fork, id, contents.clone(), true).unwrap(),
+            3
+        );
+        let stored = fork.object(id).unwrap().unwrap();
+        assert_eq!(stored.data.try_as_move().unwrap().contents(), &contents[..]);
     }
 
     #[test]
